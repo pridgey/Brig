@@ -187,7 +187,24 @@ data class MediaState(
     val playing: Boolean,
     val appLabel: String,
     val controller: MediaController,
-)
+    val playbackState: Int,
+    /** elapsedRealtime of the last position update (for paused sessions, roughly when it paused). */
+    val updatedAt: Long,
+    val positionMs: Long,
+    val durationMs: Long,
+    val speed: Float,
+) {
+    fun isVisible(v: dev.pridgey.brig.data.MediaVisibility): Boolean {
+        if (title.isBlank()) return false
+        return when (v) {
+            dev.pridgey.brig.data.MediaVisibility.PLAYING -> playing
+            dev.pridgey.brig.data.MediaVisibility.RECENT -> playing ||
+                (playbackState == PlaybackState.STATE_PAUSED && android.os.SystemClock.elapsedRealtime() - updatedAt < 10 * 60_000L)
+            dev.pridgey.brig.data.MediaVisibility.ALWAYS ->
+                playbackState != PlaybackState.STATE_NONE && playbackState != PlaybackState.STATE_ERROR
+        }
+    }
+}
 
 /** Tracks the active media session. Needs notification access to see sessions. */
 object MediaRepo {
@@ -195,10 +212,12 @@ object MediaRepo {
     private var manager: MediaSessionManager? = null
     private var current: MediaController? = null
     private var appContext: Context? = null
+    private var component: ComponentName? = null
 
     private val callback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: MediaMetadata?) = emit()
-        override fun onPlaybackStateChanged(state: PlaybackState?) = emit()
+        // Another player may have started; re-pick so the playing one wins.
+        override fun onPlaybackStateChanged(state: PlaybackState?) = repick()
         override fun onSessionDestroyed() {
             current = null
             emit()
@@ -212,6 +231,7 @@ object MediaRepo {
         val m = ctx.getSystemService(MediaSessionManager::class.java)
         manager = m
         val component = ComponentName(ctx, BrigNotificationListener::class.java)
+        this.component = component
         runCatching {
             m.addOnActiveSessionsChangedListener(sessionsListener, component)
             pick(m.getActiveSessions(component))
@@ -223,6 +243,13 @@ object MediaRepo {
         current?.unregisterCallback(callback)
         current = null
         state.value = null
+    }
+
+    private fun repick() {
+        val m = manager
+        val c = component
+        if (m == null || c == null) return emit()
+        runCatching { pick(m.getActiveSessions(c)) }.onFailure { emit() }
     }
 
     private fun pick(list: List<MediaController>?) {
@@ -243,15 +270,21 @@ object MediaRepo {
             return
         }
         val art = md.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART) ?: md.getBitmap(MediaMetadata.METADATA_KEY_ART)
+        val ps = c.playbackState
         state.value = MediaState(
             title = md.getString(MediaMetadata.METADATA_KEY_TITLE)
                 ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE).orEmpty(),
             artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST)
                 ?: md.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST).orEmpty(),
             art = art?.asImageBitmap(),
-            playing = c.playbackState?.state == PlaybackState.STATE_PLAYING,
+            playing = ps?.state == PlaybackState.STATE_PLAYING,
             appLabel = appContext?.let { AppsRepo.label(it, c.packageName) } ?: c.packageName,
             controller = c,
+            playbackState = ps?.state ?: PlaybackState.STATE_NONE,
+            updatedAt = ps?.lastPositionUpdateTime ?: 0L,
+            positionMs = ps?.position ?: 0L,
+            durationMs = md.getLong(MediaMetadata.METADATA_KEY_DURATION),
+            speed = ps?.playbackSpeed ?: 1f,
         )
     }
 }

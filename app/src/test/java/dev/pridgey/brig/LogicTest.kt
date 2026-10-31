@@ -11,6 +11,10 @@ import dev.pridgey.brig.data.TriggerType
 import dev.pridgey.brig.update.ReleaseParser
 import dev.pridgey.brig.util.MathProblems
 import dev.pridgey.brig.util.PinHasher
+import dev.pridgey.brig.util.PhotoFx
+import dev.pridgey.brig.data.PhotoConfig
+import dev.pridgey.brig.data.PhotoEffect
+import androidx.compose.ui.graphics.Color
 import dev.pridgey.brig.util.WordClock
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -119,5 +123,32 @@ class LogicTest {
         assertEquals(s, SettingsRepository.decode(json))
         assertEquals(BrigSettings(), SettingsRepository.decode("not json"))
         assertTrue(SettingsRepository.decode("""{"enabled":true,"futureField":1}""").enabled)
+    }
+
+    @Test
+    fun photoMatrices() {
+        val id = PhotoFx.identity()
+        val sat = PhotoFx.saturation(0.3f)
+        assertTrue(PhotoFx.concat(id, sat).contentEquals(sat))
+        assertTrue(PhotoFx.concat(sat, id).contentEquals(sat))
+
+        // Mono makes channels equal.
+        val (r, g, b) = PhotoFx.apply(PhotoFx.saturation(0f), 200f, 50f, 10f)
+        assertEquals(r, g, 0.01f)
+        assertEquals(g, b, 0.01f)
+
+        // Order matters: contrast first, then brightness, so +0.2 brightness adds 51 at the end.
+        val m = PhotoFx.concat(PhotoFx.brightness(0.2f), PhotoFx.contrast(2f))
+        assertEquals(128f * 2 - 128f + 51f, PhotoFx.apply(m, 128f, 128f, 128f).first, 0.01f)
+
+        // Duotone maps black to the shadow color and white to the highlight color.
+        val duo = PhotoFx.duotone(Color(0xFF102030), Color(0xFFF0E0D0))
+        assertEquals(0x10.toFloat(), PhotoFx.apply(duo, 0f, 0f, 0f).first, 0.6f)
+        assertEquals(0xF0.toFloat(), PhotoFx.apply(duo, 255f, 255f, 255f).first, 0.6f)
+
+        // Default config leaves colors alone.
+        val (r2, g2, b2) = PhotoFx.apply(PhotoFx.matrix(PhotoConfig(), Color.Red), 12f, 99f, 230f)
+        assertEquals(12f, r2, 0.01f); assertEquals(99f, g2, 0.01f); assertEquals(230f, b2, 0.01f)
+        PhotoEffect.entries.forEach { assertEquals(20, PhotoFx.effect(it, Color.Blue).size) }
     }
 }

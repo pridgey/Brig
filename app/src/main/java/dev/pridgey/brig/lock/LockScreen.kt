@@ -289,12 +289,13 @@ private fun MainContent(
     val enabled = settings.widgetOrder().filter { it.enabled }.map { it.type }
     val appearance = settings.appearance
 
-    Box(modifier.systemBarsPadding().padding(horizontal = 22.dp)) {
+    val layout = appearance.layout
+    Box(modifier.systemBarsPadding().padding(horizontal = layout.side.dp)) {
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(top = 28.dp, bottom = with(density) { bottomHeight.toDp() } + 8.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+                .padding(top = layout.top.dp, bottom = with(density) { bottomHeight.toDp() } + 8.dp),
+            verticalArrangement = Arrangement.spacedBy(layout.spacing.dp),
         ) {
             val align = appearance.clockAlignment(clockStyle)
             Clock(clockStyle, now, ClockSpec.from(appearance, accent), Modifier.align(align))
@@ -332,8 +333,8 @@ private fun MainContent(
                             color = Color.White.copy(alpha = 0.92f),
                             modifier = Modifier.align(align),
                         )
-                        WidgetType.CALENDAR -> CalendarWidget(now, accent)
-                        WidgetType.MEDIA -> MediaWidget(accent)
+                        WidgetType.CALENDAR -> LiveCalendar(now, settings.calendar, accent)
+                        WidgetType.MEDIA -> LiveMedia(settings.media, accent, now)
                         WidgetType.QUOTE -> QuoteWidget(now)
                         WidgetType.NOTIFICATIONS -> if (!effects.hideNotifications) {
                             Box(Modifier.weight(1f, fill = false)) {
@@ -351,7 +352,7 @@ private fun MainContent(
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .onSizeChanged { bottomHeight = it.height }
-                .padding(bottom = 10.dp),
+                .padding(bottom = layout.bottom.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -468,9 +469,13 @@ private fun StatsChip() {
 // ---------------------------------------------------------------- Cards
 
 @Composable
-fun GlassCard(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
+fun GlassCard(
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    color: Color = Color.White.copy(alpha = 0.11f),
+    content: @Composable ColumnScope.() -> Unit,
+) {
     val shape = RoundedCornerShape(26.dp)
-    val color = Color.White.copy(alpha = 0.11f)
     val inner: @Composable () -> Unit = { Column(Modifier.padding(14.dp), content = content) }
     if (onClick != null) {
         val source = remember { MutableInteractionSource() }
@@ -484,73 +489,26 @@ fun GlassCard(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null, cont
 }
 
 @Composable
-private fun CalendarWidget(now: LocalDateTime, accent: Color) {
+private fun LiveCalendar(now: LocalDateTime, cfg: dev.pridgey.brig.data.CalendarConfig, accent: Color) {
     val ctx = LocalContext.current
-    val events by produceState(emptyList<CalEvent>(), now.hour, now.minute / 15) {
-        value = withContext(Dispatchers.IO) { CalendarRepo.upcoming(ctx) }
+    val events by produceState(emptyList<CalEvent>(), now.hour, now.minute / 5, cfg) {
+        value = withContext(Dispatchers.IO) { CalendarRepo.upcoming(ctx, cfg.count, cfg.lookaheadHours, cfg.showAllDay) }
     }
-    if (events.isEmpty()) return
-    GlassCard {
-        events.forEach { e ->
-            Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(10.dp).clip(CircleShape).background(if (e.color == 0) accent else Color(e.color)))
-                Spacer(Modifier.width(10.dp))
-                Text(CalendarRepo.whenLabel(e), style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.widthIn(min = 84.dp))
-                Text(e.title, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-    }
+    CalendarView(events, cfg, accent, System.currentTimeMillis())
 }
 
 @Composable
-private fun MediaWidget(accent: Color) {
+private fun LiveMedia(cfg: dev.pridgey.brig.data.MediaConfig, accent: Color, now: LocalDateTime) {
     val media by MediaRepo.state.collectAsState()
-    val m = media ?: return
-    // The play button morphs between a cookie (paused) and a circle (playing).
-    val morph = remember { Morph(BrigShapes.cookie9, BrigShapes.circle) }
-    val progress by animateFloatAsState(if (m.playing) 1f else 0f, spring(dampingRatio = 0.5f, stiffness = Spring.StiffnessLow), label = "morph")
-    val spin = rememberInfiniteTransition(label = "spin")
-    val rotation by spin.animateFloat(0f, 360f, infiniteRepeatable(tween(12_000, easing = androidx.compose.animation.core.LinearEasing)), label = "rot")
-    GlassCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (m.art != null) {
-                Image(m.art, null, Modifier.size(58.dp).clip(RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop)
-            } else {
-                Box(Modifier.size(58.dp).clip(RoundedCornerShape(16.dp)).background(accent.copy(alpha = 0.3f)), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Filled.MusicNote, null, tint = Color.White)
-                }
-            }
-            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                Text(m.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(m.artist, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(m.appLabel, style = MaterialTheme.typography.labelSmall, color = accent)
-            }
-            IconButton(onClick = { m.controller.transportControls.skipToPrevious() }) {
-                Icon(Icons.Filled.SkipPrevious, "Previous", tint = Color.White)
-            }
-            val source = remember { MutableInteractionSource() }
-            Box(
-                Modifier
-                    .size(52.dp)
-                    .pressScale(source, 0.85f)
-                    .clip(MorphShape(morph, progress, if (m.playing) 0f else rotation))
-                    .background(accent)
-                    .clickable(source, null) {
-                        if (m.playing) m.controller.transportControls.pause() else m.controller.transportControls.play()
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(if (m.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/pause", tint = Color.Black)
-            }
-            IconButton(onClick = { m.controller.transportControls.skipToNext() }) {
-                Icon(Icons.Filled.SkipNext, "Next", tint = Color.White)
-            }
-        }
-    }
+    // Re-check each minute so a long-paused session drops off.
+    val m = remember(media, cfg.visibility, now.minute) { media?.takeIf { it.isVisible(cfg.visibility) } } ?: return
+    val ui = MediaUi(m.title, m.artist, m.appLabel, m.art, m.playing, m.positionMs, m.durationMs, m.speed, m.updatedAt)
+    val tc = m.controller.transportControls
+    MediaView(ui, cfg, accent, MediaActions(prev = { tc.skipToPrevious() }, toggle = { if (m.playing) tc.pause() else tc.play() }, next = { tc.skipToNext() }))
 }
 
 @Composable
-private fun QuoteWidget(now: LocalDateTime) {
+internal fun QuoteWidget(now: LocalDateTime) {
     val (quote, author) = Quotes.forDay(now.dayOfYear)
     Column(Modifier.padding(horizontal = 4.dp)) {
         Text("“$quote”", style = MaterialTheme.typography.titleMedium, fontStyle = FontStyle.Italic, color = Color.White.copy(alpha = 0.9f))
@@ -839,40 +797,96 @@ private fun UnlockGate(
 // ---------------------------------------------------------------- Preview mock
 
 /**
- * A static stand-in for the lock screen, used by the settings previews. It draws the real
- * background and clock with sample widgets, at true phone size (callers scale it down).
+ * A stand-in for the lock screen used by the settings previews. It follows the real layout
+ * (widget order, spacing, styles) with sample data, at true phone size (callers scale it down).
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun LockMock(settings: BrigSettings) {
+    val ctx = LocalContext.current
     val a = settings.appearance
+    val layout = a.layout
     val now by rememberNow(a.showSeconds)
     val accent = a.accent?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
     val align = a.clockAlignment()
+    val enabled = settings.widgetOrder().filter { it.enabled }.map { it.type }
+    val nowMs = remember(now.minute) { System.currentTimeMillis() }
+    val events = remember(nowMs, settings.calendar.count) { sampleEvents(nowMs).take(settings.calendar.count) }
     Box(Modifier.fillMaxSize()) {
         LockBackground(a, accent)
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = a.dim)))
         Column(
-            Modifier.fillMaxSize().padding(horizontal = 22.dp).padding(top = 72.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            Modifier.fillMaxSize().padding(horizontal = layout.side.dp).padding(top = 44.dp + layout.top.dp, bottom = 190.dp),
+            verticalArrangement = Arrangement.spacedBy(layout.spacing.dp),
         ) {
             Clock(a.clockStyle, now, ClockSpec.from(a, accent), Modifier.align(align))
             a.secondaryZone?.let { SecondaryZone(it, now, a.use24h, Modifier.align(align)) }
-            if (settings.isWidgetOn(WidgetType.DATE)) {
-                Text(
-                    now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
-                    style = MaterialTheme.typography.titleLarge,
-                    color = Color.White.copy(alpha = 0.92f),
-                    modifier = Modifier.align(align),
-                )
-            }
-            FlowRow(Modifier.align(align), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (settings.isWidgetOn(WidgetType.ALARM)) GlanceChip("7:00 AM", icon = Icons.Filled.Alarm)
-                if (settings.isWidgetOn(WidgetType.BATTERY)) GlanceChip("82%", icon = Icons.Filled.BatteryStd)
-                if (settings.isWidgetOn(WidgetType.WEATHER)) GlanceChip("72°  75°/60°", emoji = "🌤️")
+            groupWidgets(enabled.filterNot { it in bottomTypes }).forEach { group ->
+                when (group) {
+                    is WidgetGroup.Chips -> FlowRow(
+                        Modifier.align(align),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        group.types.forEach { type ->
+                            when (type) {
+                                WidgetType.ALARM -> GlanceChip("7:00 AM", icon = Icons.Filled.Alarm)
+                                WidgetType.BATTERY -> GlanceChip("82%", icon = Icons.Filled.BatteryStd)
+                                WidgetType.WEATHER -> GlanceChip("72°  75°/60°", emoji = "🌤️")
+                                WidgetType.STATS -> GlanceChip("12 unlocks · 30 wakes", emoji = "📊")
+                                else -> Unit
+                            }
+                        }
+                    }
+                    is WidgetGroup.Single -> when (group.type) {
+                        WidgetType.DATE -> Text(
+                            now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
+                            style = MaterialTheme.typography.titleLarge,
+                            color = Color.White.copy(alpha = 0.92f),
+                            modifier = Modifier.align(align),
+                        )
+                        WidgetType.MEDIA -> MediaView(sampleMedia(), settings.media, accent, MediaActions.None)
+                        WidgetType.CALENDAR -> CalendarView(events, settings.calendar, accent, nowMs)
+                        WidgetType.QUOTE -> QuoteWidget(now)
+                        WidgetType.NOTIFICATIONS -> GlassCard {
+                            Text("Messages · 2m", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.7f))
+                            Text(
+                                if (settings.notifications.hideAllContent) "Content hidden" else "Sam",
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            if (!settings.notifications.hideAllContent) {
+                                Text("Running 5 min late! Grab us a table?", style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.85f))
+                            }
+                        }
+                        else -> Unit
+                    }
+                }
             }
         }
-        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 36.dp)) {
+        Column(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 24.dp + layout.bottom.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            if (WidgetType.SHORTCUTS in enabled && settings.shortcuts.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    settings.shortcuts.forEachIndexed { i, pkg ->
+                        Box(
+                            Modifier.size(52.dp).clip(PolygonShape(BrigShapes.badges[i % BrigShapes.badges.size])).background(Color.White.copy(alpha = 0.14f)),
+                            contentAlignment = Alignment.Center,
+                        ) { remember(pkg) { AppsRepo.icon(ctx, pkg) }?.let { Image(it, null, Modifier.size(34.dp)) } }
+                    }
+                }
+            }
+            if (WidgetType.TOGGLES in enabled) {
+                Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                    listOf(Icons.Filled.FlashlightOff, Icons.Filled.DoNotDisturbOff, Icons.AutoMirrored.Filled.VolumeUp).forEach {
+                        Box(Modifier.size(58.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+                            Icon(it, null, tint = Color.White)
+                        }
+                    }
+                }
+            }
             UnlockHint(settings.gestures, false, accent)
         }
     }

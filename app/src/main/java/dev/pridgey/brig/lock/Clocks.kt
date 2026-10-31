@@ -88,6 +88,8 @@ data class ClockSpec(
     val color: Color,
     val font: FontFamily,
     val weight: FontWeight?,
+    /** Show AM/PM next to 12-hour clocks. */
+    val amPm: Boolean = !use24h,
 ) {
     val hourPattern get() = when {
         use24h -> "HH"
@@ -107,6 +109,7 @@ data class ClockSpec(
             color = a.clockColor?.let { Color(it) } ?: Color.White,
             font = a.clockFont.family(),
             weight = a.clockWeight?.weight(),
+            amPm = !a.use24h && a.showAmPm,
         )
     }
 }
@@ -202,10 +205,10 @@ fun Clock(style: ClockStyle, now: LocalDateTime, spec: ClockSpec, modifier: Modi
 /** Seconds and AM/PM, stacked small beside a clock. */
 @Composable
 private fun SideLabels(now: LocalDateTime, spec: ClockSpec, modifier: Modifier = Modifier) {
-    if (!spec.showSeconds && spec.use24h) return
+    if (!spec.showSeconds && !spec.amPm) return
     Column(modifier) {
         if (spec.showSeconds) RollingText(now.f("ss"), TextStyle(fontSize = (22 * spec.scale).sp, color = spec.accent, fontWeight = FontWeight.Bold, fontFeatureSettings = TNUM))
-        if (!spec.use24h) Text(now.f("a"), fontSize = (16 * spec.scale).sp, color = spec.color.copy(alpha = 0.7f), fontWeight = FontWeight.Bold)
+        if (spec.amPm) Text(now.f("a"), fontSize = (16 * spec.scale).sp, color = spec.color.copy(alpha = 0.7f), fontWeight = FontWeight.Bold)
     }
 }
 
@@ -222,7 +225,7 @@ private fun FlipClock(now: LocalDateTime, spec: ClockSpec, modifier: Modifier) {
             Spacer(Modifier.width(h * 0.1f))
             FlipGroup(now.f("ss"), h * 0.5f, spec, spec.color.copy(alpha = 0.8f))
         }
-        if (!spec.use24h) {
+        if (spec.amPm) {
             Text(now.f("a"), fontSize = (16 * spec.scale).sp, color = spec.color.copy(alpha = 0.7f), fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 6.dp))
         }
     }
@@ -290,7 +293,7 @@ private fun BubbleClock(now: LocalDateTime, spec: ClockSpec, modifier: Modifier)
     Column(modifier, verticalArrangement = Arrangement.spacedBy(b * 0.08f)) {
         Row(horizontalArrangement = Arrangement.spacedBy(b * 0.08f), verticalAlignment = Alignment.CenterVertically) {
             now.f(spec.hourPattern).forEachIndexed { i, ch -> key("h$i") { Bubble(ch, i, Color.White.copy(alpha = 0.16f), spec.color) } }
-            if (!spec.use24h) Text(now.f("a"), fontSize = (18 * spec.scale).sp, color = spec.color.copy(alpha = 0.7f), fontWeight = FontWeight.Bold)
+            if (spec.amPm) Text(now.f("a"), fontSize = (18 * spec.scale).sp, color = spec.color.copy(alpha = 0.7f), fontWeight = FontWeight.Bold)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(b * 0.08f), verticalAlignment = Alignment.CenterVertically) {
             now.f("mm").forEachIndexed { i, ch -> key("m$i") { Bubble(ch, i + 2, spec.accent, Color.Black) } }
@@ -330,7 +333,7 @@ private fun OrbitClock(now: LocalDateTime, spec: ClockSpec, modifier: Modifier) 
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             RollingText(now.f(spec.hourPattern), TextStyle(fontFamily = spec.font, fontSize = (88 * spec.scale).sp, lineHeight = (88 * spec.scale).sp, fontWeight = spec.w(FontWeight.Bold), color = c, fontFeatureSettings = TNUM))
             Text(
-                now.f("mm") + if (!spec.use24h) " " + now.f("a") else "",
+                now.f("mm") + if (spec.amPm) " " + now.f("a") else "",
                 fontFamily = spec.font, fontSize = (24 * spec.scale).sp, fontWeight = FontWeight.Bold, color = spec.accent,
             )
         }
@@ -353,7 +356,7 @@ private fun GradientClock(now: LocalDateTime, spec: ClockSpec, modifier: Modifie
             style = TextStyle(brush = brush, fontFamily = spec.font, fontSize = (104 * spec.scale).sp, fontWeight = spec.w(FontWeight.Black), letterSpacing = (-4).sp, fontFeatureSettings = TNUM),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (!spec.use24h) Text(now.f("a"), fontSize = (18 * spec.scale).sp, color = spec.color.copy(alpha = 0.7f), fontWeight = FontWeight.Bold)
+            if (spec.amPm) Text(now.f("a"), fontSize = (18 * spec.scale).sp, color = spec.color.copy(alpha = 0.7f), fontWeight = FontWeight.Bold)
             if (spec.showSeconds) RollingText(now.f("ss"), TextStyle(fontSize = (18 * spec.scale).sp, color = spec.accent, fontWeight = FontWeight.Bold, fontFeatureSettings = TNUM))
         }
     }
@@ -414,7 +417,7 @@ private fun DotMatrixClock(now: LocalDateTime, spec: ClockSpec, modifier: Modifi
                 x0 += g[0].length + 1
             }
         }
-        if (!spec.use24h) Text(now.f("a"), fontSize = (14 * spec.scale).sp, color = spec.color.copy(alpha = 0.6f), fontWeight = FontWeight.Bold)
+        if (spec.amPm) Text(now.f("a"), fontSize = (14 * spec.scale).sp, color = spec.color.copy(alpha = 0.6f), fontWeight = FontWeight.Bold)
     }
 }
 

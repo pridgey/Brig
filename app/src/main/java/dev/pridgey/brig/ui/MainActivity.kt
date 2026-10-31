@@ -60,6 +60,8 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Widgets
 import androidx.compose.material3.Button
@@ -115,6 +117,7 @@ enum class Screen(val title: String, val subtitle: String, val icon: ImageVector
     SHORTCUTS("Shortcuts", "Apps on the lock screen", Icons.Filled.Apps),
     PROFILES("Profiles", "Bedside & automation", Icons.Filled.Schedule),
     UPDATES("Updates & backup", "Self-update, export", Icons.Filled.SystemUpdate),
+    PERMISSIONS("Permissions", "What Brig can access", Icons.Filled.Security),
 }
 
 class MainActivity : ComponentActivity() {
@@ -162,41 +165,117 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen) {
             Screen.SHORTCUTS -> ShortcutsScreen(settings, update, back)
             Screen.PROFILES -> ProfilesScreen(settings, update, back)
             Screen.UPDATES -> UpdatesScreen(settings, update, back)
+            Screen.PERMISSIONS -> PermissionsScreen(back)
+        }
+    }
+}
+
+private data class SetupStatus(
+    val a11y: Boolean,
+    val listener: Boolean,
+    val postNotif: Boolean,
+    val calendar: Boolean,
+    val dnd: Boolean,
+    val install: Boolean,
+    val battery: Boolean,
+) {
+    val essentialsPending get() = listOf(a11y, listener, postNotif).count { !it }
+    val granted get() = listOf(a11y, listener, postNotif, calendar, dnd, install, battery).count { it }
+    val total get() = 7
+}
+
+/** Current permission state, re-read whenever the app comes back to the foreground. */
+@Composable
+private fun rememberSetupStatus(): Pair<SetupStatus, () -> Unit> {
+    val ctx = LocalContext.current
+    var tick by remember { mutableIntStateOf(0) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { tick++ }
+    val listenerConnected by BrigNotificationListener.connected.collectAsStateWithLifecycle()
+    val status = remember(tick, listenerConnected) {
+        SetupStatus(
+            a11y = Device.isAccessibilityEnabled(ctx),
+            listener = Device.isNotificationListenerEnabled(ctx),
+            postNotif = Notifications.canPost(ctx),
+            calendar = CalendarRepo.hasPermission(ctx),
+            dnd = Device.hasDndAccess(ctx),
+            install = Device.canInstallPackages(ctx),
+            battery = Device.ignoringBatteryOptimizations(ctx),
+        )
+    }
+    return status to { tick++ }
+}
+
+private fun openSettings(ctx: android.content.Context, action: String, withPackage: Boolean = false) {
+    val i = Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (withPackage) i.data = Uri.parse("package:${ctx.packageName}")
+    runCatching { ctx.startActivity(i) }
+}
+
+@Composable
+private fun SetupGroup(status: SetupStatus, refresh: () -> Unit) {
+    val ctx = LocalContext.current
+    val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh() }
+    val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh() }
+    val title = if (status.essentialsPending == 0) "Essentials done · ${status.granted} of ${status.total} granted"
+    else "Setup · ${status.essentialsPending} essential left"
+    SettingsGroup(title) {
+        SetupRow("Lock trigger", "Accessibility service. Opens Brig when the screen turns off.", Icons.Filled.AccessibilityNew, status.a11y) {
+            openSettings(ctx, Settings.ACTION_ACCESSIBILITY_SETTINGS)
+        }
+        SetupRow("Notification access", "Notifications, media controls and replies", Icons.Filled.NotificationsActive, status.listener) {
+            openSettings(ctx, Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            SetupRow("Post notifications", "Update alerts and fallback mode", Icons.Filled.Notifications, status.postNotif) {
+                notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        SetupRow("Calendar", "Upcoming events widget", Icons.Filled.CalendarMonth, status.calendar, optional = true) {
+            calendarPermission.launch(Manifest.permission.READ_CALENDAR)
+        }
+        SetupRow("Do Not Disturb access", "DND toggle and silent mode", Icons.Filled.DoNotDisturbOn, status.dnd, optional = true) {
+            openSettings(ctx, Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+        }
+        SetupRow("Install updates", "Lets the built-in updater install new versions", Icons.Filled.SystemUpdate, status.install, optional = true) {
+            openSettings(ctx, Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, withPackage = true)
+        }
+        SetupRow("Unrestricted battery", "Keeps Android from killing Brig", Icons.Filled.BatterySaver, status.battery, optional = true) {
+            openSettings(ctx, Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, withPackage = true)
         }
     }
 }
 
 @Composable
-private fun HomeScreen(settings: BrigSettings, update: SettingsUpdate, navigate: (Screen) -> Unit) {
+private fun RestrictedSettingsHint() {
     val ctx = LocalContext.current
-    var tick by remember { mutableIntStateOf(0) }
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { tick++ }
-    val updateState by Updater.state.collectAsStateWithLifecycle()
-    val listenerConnected by BrigNotificationListener.connected.collectAsStateWithLifecycle()
-    val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { tick++ }
-    val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { tick++ }
+    Banner(
+        "Toggle greyed out?",
+        "Android blocks these for sideloaded apps. Open App info → ⋮ → Allow restricted settings, then try again.",
+        Icons.Filled.Info, MaterialTheme.colorScheme.secondaryContainer,
+    ) { openSettings(ctx, Settings.ACTION_APPLICATION_DETAILS_SETTINGS, withPackage = true) }
+}
 
-    // Re-read system state whenever we come back from a settings page.
-    val a11y = remember(tick) { Device.isAccessibilityEnabled(ctx) }
-    val listener = remember(tick, listenerConnected) { Device.isNotificationListenerEnabled(ctx) }
-    val postNotif = remember(tick) { Notifications.canPost(ctx) }
-    val calendar = remember(tick) { CalendarRepo.hasPermission(ctx) }
-    val dnd = remember(tick) { Device.hasDndAccess(ctx) }
-    val install = remember(tick) { Device.canInstallPackages(ctx) }
-    val battery = remember(tick) { Device.ignoringBatteryOptimizations(ctx) }
-
-    fun open(action: String, withPackage: Boolean = false) {
-        val i = Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (withPackage) i.data = Uri.parse("package:${ctx.packageName}")
-        runCatching { ctx.startActivity(i) }
+@Composable
+private fun PermissionsScreen(onBack: () -> Unit) {
+    val (status, refresh) = rememberSetupStatus()
+    ScreenScaffold("Permissions", onBack) {
+        item { SetupGroup(status, refresh) }
+        item { RestrictedSettingsHint() }
     }
+}
+
+@Composable
+private fun HomeScreen(settings: BrigSettings, update: SettingsUpdate, navigate: (Screen) -> Unit) {
+    val updateState by Updater.state.collectAsStateWithLifecycle()
+    val (status, refresh) = rememberSetupStatus()
+    val setupDone = status.essentialsPending == 0
 
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 48.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { Hero(settings, a11y, update) }
+        item { Hero(settings, status.a11y, update) }
 
         if (updateState is UpdateState.Available) {
             item {
@@ -208,43 +287,10 @@ private fun HomeScreen(settings: BrigSettings, update: SettingsUpdate, navigate:
             }
         }
 
-        val pending = listOf(a11y, listener, postNotif).count { !it }
-        item {
-            SettingsGroup(if (pending == 0) "Setup · all essentials done" else "Setup · $pending essential left") {
-                SetupRow("Lock trigger", "Accessibility service. Opens Brig when the screen turns off.", Icons.Filled.AccessibilityNew, a11y) {
-                    open(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                }
-                SetupRow("Notification access", "Notifications, media controls and replies", Icons.Filled.NotificationsActive, listener) {
-                    open(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-                }
-                if (Build.VERSION.SDK_INT >= 33) {
-                    SetupRow("Post notifications", "Update alerts and fallback mode", Icons.Filled.Notifications, postNotif) {
-                        notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    }
-                }
-                SetupRow("Calendar", "Upcoming events widget", Icons.Filled.CalendarMonth, calendar, optional = true) {
-                    calendarPermission.launch(Manifest.permission.READ_CALENDAR)
-                }
-                SetupRow("Do Not Disturb access", "DND toggle and silent mode", Icons.Filled.DoNotDisturbOn, dnd, optional = true) {
-                    open(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
-                }
-                SetupRow("Install updates", "Lets the built-in updater install new versions", Icons.Filled.SystemUpdate, install, optional = true) {
-                    open(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, withPackage = true)
-                }
-                SetupRow("Unrestricted battery", "Keeps Android from killing Brig", Icons.Filled.BatterySaver, battery, optional = true) {
-                    open(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, withPackage = true)
-                }
-            }
-        }
-
-        if (!a11y || !listener) {
-            item {
-                Banner(
-                    "Toggle greyed out?",
-                    "Android blocks these for sideloaded apps. Open App info → ⋮ → Allow restricted settings, then try again.",
-                    Icons.Filled.Info, MaterialTheme.colorScheme.secondaryContainer,
-                ) { open(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, withPackage = true) }
-            }
+        // Setup sits up top only until the essentials are granted; then it moves to its own page.
+        if (!setupDone) {
+            item { SetupGroup(status, refresh) }
+            item { RestrictedSettingsHint() }
         }
 
         item {
@@ -255,7 +301,7 @@ private fun HomeScreen(settings: BrigSettings, update: SettingsUpdate, navigate:
                 modifier = Modifier.padding(start = 20.dp),
             )
         }
-        val sections = Screen.entries.filter { it != Screen.HOME }
+        val sections = Screen.entries.filter { it != Screen.HOME && it != Screen.PERMISSIONS }
         sections.chunked(2).forEachIndexed { row, pair ->
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -263,6 +309,33 @@ private fun HomeScreen(settings: BrigSettings, update: SettingsUpdate, navigate:
                         SectionTile(s, row * 2 + col, Modifier.weight(1f)) { navigate(s) }
                     }
                     if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+
+        if (setupDone) {
+            item {
+                Surface(
+                    onClick = { navigate(Screen.PERMISSIONS) },
+                    shape = RoundedCornerShape(28.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                ) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier.size(40.dp).clip(PolygonShape(BrigShapes.cookie9)).background(MaterialTheme.colorScheme.primary),
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(Icons.Filled.Security, null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(20.dp)) }
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Permissions", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "${status.granted} of ${status.total} granted · essentials all set",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         }

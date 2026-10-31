@@ -1,6 +1,23 @@
 package dev.pridgey.brig.ui
 
 import android.content.Context
+import dev.pridgey.brig.data.CalendarConfig
+import dev.pridgey.brig.data.CalendarRepo
+import dev.pridgey.brig.data.CalendarStyle
+import dev.pridgey.brig.data.MediaConfig
+import dev.pridgey.brig.data.MediaStyle
+import dev.pridgey.brig.data.MediaVisibility
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.layout.ContentScale
+import dev.pridgey.brig.data.LayoutConfig
+import dev.pridgey.brig.data.PhotoConfig
+import dev.pridgey.brig.data.PhotoEffect
+import dev.pridgey.brig.lock.loadPhoto
+import dev.pridgey.brig.util.PhotoFx
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.runtime.LaunchedEffect
@@ -207,6 +224,7 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
             SettingsGroup("Time format") {
                 SwitchRow("24-hour time", checked = a.use24h) { v -> set { it.copy(use24h = v) } }
                 if (!a.use24h) SwitchRow("Leading zero", "09:41 instead of 9:41", a.leadingZero) { v -> set { it.copy(leadingZero = v) } }
+                if (!a.use24h) SwitchRow("Show AM/PM", checked = a.showAmPm) { v -> set { it.copy(showAmPm = v) } }
                 SwitchRow("Show seconds", "Uses a little more battery", a.showSeconds) { v -> set { it.copy(showSeconds = v) } }
                 DropdownRow(
                     "Second time zone", zones, a.secondaryZone ?: "",
@@ -222,14 +240,8 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
                     } else set { it.copy(background = b) }
                 }
                 when (a.background) {
-                    BackgroundType.IMAGE -> {
-                        ClickRow("Choose photo", "Pick any image from your gallery", Icons.Filled.Image) {
-                            picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                        }
-                        SliderRow(
-                            "Blur", a.blur, 0f..1f, label = { "${(it * 100).roundToInt()}%" },
-                            onLive = { v -> preview { it.copy(blur = v) } },
-                        ) { v -> set { it.copy(blur = v) } }
+                    BackgroundType.IMAGE -> ClickRow("Choose photo", "Pick any image from your gallery", Icons.Filled.Image) {
+                        picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     }
                     BackgroundType.SOLID -> ColorSwatches(a.solidColor, allowAuto = false, colors = SolidChoices) { c ->
                         if (c != null) set { it.copy(solidColor = c) }
@@ -242,6 +254,21 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
                     "Dim", a.dim, 0f..0.8f, label = { "${(it * 100).roundToInt()}%" },
                     onLive = { v -> preview { it.copy(dim = v) } },
                 ) { v -> set { it.copy(dim = v) } }
+            }
+        }
+        if (a.background == BackgroundType.IMAGE && a.imagePath != null) {
+            item { PhotoEditor(a, set = ::set, preview = ::preview) }
+        }
+        item {
+            val l = a.layout
+            fun setL(f: (LayoutConfig) -> LayoutConfig) = set { it.copy(layout = f(it.layout)) }
+            fun liveL(f: (LayoutConfig) -> LayoutConfig) = preview { it.copy(layout = f(it.layout)) }
+            SettingsGroup("Layout") {
+                SliderRow("Top padding", l.top.toFloat(), 0f..160f, label = { "${it.roundToInt()} dp" }, onLive = { v -> liveL { it.copy(top = v.roundToInt()) } }) { v -> setL { it.copy(top = v.roundToInt()) } }
+                SliderRow("Side padding", l.side.toFloat(), 0f..64f, label = { "${it.roundToInt()} dp" }, onLive = { v -> liveL { it.copy(side = v.roundToInt()) } }) { v -> setL { it.copy(side = v.roundToInt()) } }
+                SliderRow("Space between widgets", l.spacing.toFloat(), 0f..48f, label = { "${it.roundToInt()} dp" }, onLive = { v -> liveL { it.copy(spacing = v.roundToInt()) } }) { v -> setL { it.copy(spacing = v.roundToInt()) } }
+                SliderRow("Bottom padding", l.bottom.toFloat(), 0f..120f, label = { "${it.roundToInt()} dp" }, onLive = { v -> liveL { it.copy(bottom = v.roundToInt()) } }) { v -> setL { it.copy(bottom = v.roundToInt()) } }
+                ClickRow("Reset spacing", icon = Icons.Filled.RestartAlt) { setL { LayoutConfig() } }
             }
         }
         item {
@@ -259,6 +286,60 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
 }
 
 @Composable
+private fun PhotoEditor(a: Appearance, set: ((Appearance) -> Appearance) -> Unit, preview: ((Appearance) -> Appearance) -> Unit) {
+    val p = a.photo
+    val accent = a.accent?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
+    fun setP(f: (PhotoConfig) -> PhotoConfig) = set { it.copy(photo = f(it.photo)) }
+    fun liveP(f: (PhotoConfig) -> PhotoConfig) = preview { it.copy(photo = f(it.photo)) }
+    val thumb by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, a.imagePath) {
+        value = withContext(Dispatchers.IO) { a.imagePath?.let { loadPhoto(it, 320) } }
+    }
+    fun pct(v: Float) = "${(v * 100).roundToInt()}%"
+    fun signed(v: Float) = (if (v > 0) "+" else "") + (v * 100).roundToInt()
+
+    SettingsGroup("Photo") {
+        Text("Effect", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 20.dp, top = 8.dp))
+        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(PhotoEffect.entries) { e ->
+                val selected = e == p.effect
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        Modifier
+                            .size(72.dp, 104.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                            .then(if (selected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(18.dp)) else Modifier)
+                            .background(Color.DarkGray)
+                            .clickable { setP { it.copy(effect = e) } },
+                    ) {
+                        thumb?.let {
+                            Image(
+                                it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
+                                colorFilter = ColorFilter.colorMatrix(ColorMatrix(PhotoFx.effect(e, accent))),
+                            )
+                        }
+                    }
+                    Text(e.label, style = MaterialTheme.typography.labelMedium, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
+        }
+        SliderRow("Brightness", p.brightness, -0.5f..0.5f, label = ::signed, onLive = { v -> liveP { it.copy(brightness = v) } }) { v -> setP { it.copy(brightness = v) } }
+        SliderRow("Contrast", p.contrast, 0.5f..1.6f, label = ::pct, onLive = { v -> liveP { it.copy(contrast = v) } }) { v -> setP { it.copy(contrast = v) } }
+        SliderRow("Saturation", p.saturation, 0f..2f, label = ::pct, onLive = { v -> liveP { it.copy(saturation = v) } }) { v -> setP { it.copy(saturation = v) } }
+        SliderRow("Blur", a.blur, 0f..1f, label = ::pct, onLive = { v -> preview { it.copy(blur = v) } }) { v -> set { it.copy(blur = v) } }
+        SliderRow("Zoom", p.zoom, 1f..2.5f, label = { "%.1f×".format(it) }, onLive = { v -> liveP { it.copy(zoom = v) } }) { v -> setP { it.copy(zoom = v) } }
+        if (p.zoom > 1.01f) {
+            SliderRow("Move left / right", p.panX, -1f..1f, label = ::signed, onLive = { v -> liveP { it.copy(panX = v) } }) { v -> setP { it.copy(panX = v) } }
+            SliderRow("Move up / down", p.panY, -1f..1f, label = ::signed, onLive = { v -> liveP { it.copy(panY = v) } }) { v -> setP { it.copy(panY = v) } }
+        }
+        SliderRow("Vignette", p.vignette, 0f..1f, label = ::pct, onLive = { v -> liveP { it.copy(vignette = v) } }) { v -> setP { it.copy(vignette = v) } }
+        SliderRow("Film grain", p.grain, 0f..1f, label = ::pct, onLive = { v -> liveP { it.copy(grain = v) } }) { v -> setP { it.copy(grain = v) } }
+        SliderRow("Readability fade", p.scrim, 0f..1f, label = ::pct, onLive = { v -> liveP { it.copy(scrim = v) } }) { v -> setP { it.copy(scrim = v) } }
+        SwitchRow("Ken Burns", "Very slow zoom and drift", p.kenBurns) { v -> setP { it.copy(kenBurns = v) } }
+        ClickRow("Reset photo tweaks", icon = Icons.Filled.RestartAlt) { setP { PhotoConfig() }; set { it.copy(blur = 0f) } }
+    }
+}
+
+@Composable
 private fun Hint(text: String) {
     Text(
         text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -271,9 +352,15 @@ private fun Hint(text: String) {
 @Composable
 fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> Unit) {
     val order = settings.widgetOrder()
+    val ctx = LocalContext.current
     fun setWidgets(list: List<dev.pridgey.brig.data.WidgetConfig>) = update { it.copy(widgets = list) }
+    var live by remember { mutableStateOf<BrigSettings?>(null) }
+    LaunchedEffect(settings) { live = null }
 
-    ScreenScaffold("Widgets", onBack) {
+    ScreenScaffold(
+        "Widgets", onBack,
+        pinned = { LockPreview(live ?: settings, Modifier.fillMaxSize()) { LockActivity.show(ctx) } },
+    ) {
         item {
             SettingsGroup("Order & visibility") {
                 order.forEachIndexed { i, w ->
@@ -301,6 +388,40 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                         },
                         colors = itemColors,
                     )
+                }
+            }
+        }
+        if (settings.isWidgetOn(WidgetType.MEDIA)) {
+            item {
+                val m = settings.media
+                fun setM(f: (MediaConfig) -> MediaConfig) = update { it.copy(media = f(it.media)) }
+                SettingsGroup("Media controls") {
+                    Text("Design", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 20.dp, top = 8.dp))
+                    ChipChoice(MediaStyle.entries, m.style, { it.label }) { st -> setM { it.copy(style = st) } }
+                    DropdownRow("Show", MediaVisibility.entries, m.visibility, { it.label }) { v -> setM { it.copy(visibility = v) } }
+                    SwitchRow("Color from album art", "Tints the widget to match the artwork", m.tintFromArt) { v -> setM { it.copy(tintFromArt = v) } }
+                    if (m.style == MediaStyle.CARD || m.style == MediaStyle.ARTWORK) {
+                        SwitchRow("Progress bar", checked = m.showProgress) { v -> setM { it.copy(showProgress = v) } }
+                    }
+                }
+            }
+        }
+        if (settings.isWidgetOn(WidgetType.CALENDAR)) {
+            item {
+                val c = settings.calendar
+                fun setC(f: (CalendarConfig) -> CalendarConfig) = update { it.copy(calendar = f(it.calendar)) }
+                SettingsGroup("Calendar") {
+                    Text("Design", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 20.dp, top = 8.dp))
+                    ChipChoice(CalendarStyle.entries, c.style, { it.label }) { st -> setC { it.copy(style = st) } }
+                    SliderRow(
+                        "Events shown", c.count.toFloat(), 1f..5f, steps = 3, label = { it.roundToInt().toString() },
+                        onLive = { v -> live = settings.copy(calendar = c.copy(count = v.roundToInt())) },
+                    ) { v -> setC { it.copy(count = v.roundToInt()) } }
+                    DropdownRow("Look ahead", listOf(12, 24, 36, 72, 168), c.lookaheadHours, { h -> if (h < 48) "$h hours" else "${h / 24} days" }) { h ->
+                        setC { it.copy(lookaheadHours = h) }
+                    }
+                    SwitchRow("Include all-day events", checked = c.showAllDay) { v -> setC { it.copy(showAllDay = v) } }
+                    if (!CalendarRepo.hasPermission(ctx)) Hint("Grant calendar access in Permissions to see your events. The preview uses sample events.")
                 }
             }
         }

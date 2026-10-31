@@ -1,5 +1,18 @@
 package dev.pridgey.brig.lock
 
+import android.graphics.Bitmap
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.ImageShader
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.graphicsLayer
+import dev.pridgey.brig.data.PhotoConfig
+import dev.pridgey.brig.util.PhotoFx
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -127,7 +140,7 @@ fun LockBackground(appearance: Appearance, accent: Color, modifier: Modifier = M
             BackgroundType.TIME_OF_DAY -> SkyGradient()
             BackgroundType.PARTICLES -> Starfield(accent)
             BackgroundType.SOLID -> Box(Modifier.fillMaxSize().background(Color(appearance.solidColor)))
-            BackgroundType.IMAGE -> PhotoBackground(appearance.imagePath, appearance.blur)
+            BackgroundType.IMAGE -> PhotoBackground(appearance.imagePath, appearance.blur, appearance.photo, accent)
         }
     }
 }
@@ -204,20 +217,83 @@ private fun Starfield(accent: Color) {
 }
 
 @Composable
-private fun PhotoBackground(path: String?, blur: Float) {
+private fun PhotoBackground(path: String?, blur: Float, cfg: PhotoConfig, accent: Color) {
     val bmp by produceState<ImageBitmap?>(null, path) {
-        value = withContext(Dispatchers.IO) { path?.let { decodeSampled(it, 1440) } }
+        value = withContext(Dispatchers.IO) { path?.let { loadPhoto(it, 1440) } }
     }
-    bmp?.let {
-        Image(
-            it, null,
-            Modifier.fillMaxSize().then(if (blur > 0f) Modifier.blur((blur * 30).dp) else Modifier),
-            contentScale = ContentScale.Crop,
-        )
+    val matrix = remember(cfg.effect, cfg.brightness, cfg.contrast, cfg.saturation, accent) {
+        ColorMatrix(PhotoFx.matrix(cfg, accent))
+    }
+    // Ken Burns: a very slow zoom and drift.
+    val kb = if (cfg.kenBurns) {
+        val t = rememberInfiniteTransition(label = "kenburns")
+        t.animateFloat(0f, 1f, infiniteRepeatable(tween(32_000, easing = LinearEasing), RepeatMode.Reverse), label = "kb").value
+    } else 0f
+    Box(Modifier.fillMaxSize().clipToBounds()) {
+        bmp?.let {
+            Image(
+                it, null,
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val sc = cfg.zoom * (1f + 0.14f * kb)
+                        scaleX = sc
+                        scaleY = sc
+                        val maxX = (sc - 1f) * size.width / 2f
+                        val maxY = (sc - 1f) * size.height / 2f
+                        translationX = (-cfg.panX * maxX + (kb - 0.5f) * 0.08f * size.width).coerceIn(-maxX, maxX)
+                        translationY = (-cfg.panY * maxY).coerceIn(-maxY, maxY)
+                    }
+                    .then(if (blur > 0f) Modifier.blur((blur * 30).dp) else Modifier),
+                contentScale = ContentScale.Crop,
+                colorFilter = ColorFilter.colorMatrix(matrix),
+            )
+        }
+        if (cfg.vignette > 0f) {
+            Box(
+                Modifier.fillMaxSize().drawBehind {
+                    drawRect(
+                        Brush.radialGradient(
+                            0.45f to Color.Transparent, 1f to Color.Black.copy(alpha = cfg.vignette),
+                            center = center, radius = size.maxDimension * 0.72f,
+                        ),
+                    )
+                },
+            )
+        }
+        if (cfg.grain > 0f) Grain(cfg.grain)
+        if (cfg.scrim > 0f) {
+            Box(
+                Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(
+                        0f to Color.Black.copy(alpha = 0.65f * cfg.scrim),
+                        0.35f to Color.Transparent,
+                        0.6f to Color.Transparent,
+                        1f to Color.Black.copy(alpha = 0.8f * cfg.scrim),
+                    ),
+                ),
+            )
+        }
     }
 }
 
-private fun decodeSampled(path: String, maxDim: Int): ImageBitmap? = runCatching {
+/** Tiled film-grain noise. */
+@Composable
+private fun Grain(amount: Float) {
+    val brush = remember {
+        val n = 160
+        val rnd = Random(3)
+        val pixels = IntArray(n * n) {
+            val v = rnd.nextInt(256)
+            android.graphics.Color.argb(255, v, v, v)
+        }
+        val bmp = Bitmap.createBitmap(pixels, n, n, Bitmap.Config.ARGB_8888)
+        ShaderBrush(ImageShader(bmp.asImageBitmap(), TileMode.Repeated, TileMode.Repeated))
+    }
+    Box(Modifier.fillMaxSize().drawBehind { drawRect(brush, alpha = amount * 0.45f, blendMode = BlendMode.Overlay) })
+}
+
+internal fun loadPhoto(path: String, maxDim: Int): ImageBitmap? = runCatching {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(path, bounds)
     var sample = 1

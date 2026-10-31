@@ -15,6 +15,8 @@ data class BrigSettings(
     val profiles: List<Profile> = Profile.defaults(),
     val weather: WeatherConfig = WeatherConfig(),
     val updates: UpdateConfig = UpdateConfig(),
+    val media: MediaConfig = MediaConfig(),
+    val calendar: CalendarConfig = CalendarConfig(),
 ) {
     /** Saved widget order, plus any widget types added in newer versions. */
     fun widgetOrder(): List<WidgetConfig> {
@@ -85,7 +87,10 @@ data class Appearance(
     /** Null keeps each style's own weight. */
     val clockWeight: ClockWeight? = null,
     val leadingZero: Boolean = false,
+    val showAmPm: Boolean = true,
     val clockAlign: ClockAlign = ClockAlign.AUTO,
+    val layout: LayoutConfig = LayoutConfig(),
+    val photo: PhotoConfig = PhotoConfig(),
     val background: BackgroundType = BackgroundType.AURORA,
     val solidColor: Long = 0xFF101318,
     val accent: Long? = null,
@@ -93,6 +98,80 @@ data class Appearance(
     val dim: Float = 0.25f,
     val blur: Float = 0f,
     val hideStatusBar: Boolean = false,
+)
+
+/** Lock screen spacing, in dp. */
+@Serializable
+data class LayoutConfig(
+    val top: Int = 28,
+    val side: Int = 22,
+    val spacing: Int = 14,
+    val bottom: Int = 10,
+)
+
+enum class PhotoEffect(val label: String) {
+    NONE("Original"),
+    MONO("Mono"),
+    NOIR("Noir"),
+    SEPIA("Sepia"),
+    VINTAGE("Vintage"),
+    DUOTONE("Duotone"),
+    WARM("Warm"),
+    COOL("Cool"),
+    POP("Pop"),
+    INVERT("Invert"),
+}
+
+@Serializable
+data class PhotoConfig(
+    val effect: PhotoEffect = PhotoEffect.NONE,
+    val brightness: Float = 0f,
+    val contrast: Float = 1f,
+    val saturation: Float = 1f,
+    val zoom: Float = 1f,
+    val panX: Float = 0f,
+    val panY: Float = 0f,
+    val vignette: Float = 0f,
+    val grain: Float = 0f,
+    /** Dark fade at the top and bottom so text stays readable. */
+    val scrim: Float = 0.3f,
+    val kenBurns: Boolean = false,
+)
+
+enum class MediaStyle(val label: String) {
+    CARD("Card"),
+    ARTWORK("Artwork"),
+    COMPACT("Compact"),
+    MINIMAL("Minimal"),
+}
+
+enum class MediaVisibility(val label: String) {
+    PLAYING("Only while playing"),
+    RECENT("Playing, or paused in the last 10 min"),
+    ALWAYS("Whenever a player has a track"),
+}
+
+@Serializable
+data class MediaConfig(
+    val style: MediaStyle = MediaStyle.CARD,
+    val visibility: MediaVisibility = MediaVisibility.RECENT,
+    val tintFromArt: Boolean = true,
+    val showProgress: Boolean = true,
+)
+
+enum class CalendarStyle(val label: String) {
+    LIST("List"),
+    TIMELINE("Timeline"),
+    NEXT_UP("Next up"),
+    CHIPS("Chips"),
+}
+
+@Serializable
+data class CalendarConfig(
+    val style: CalendarStyle = CalendarStyle.LIST,
+    val count: Int = 3,
+    val showAllDay: Boolean = true,
+    val lookaheadHours: Int = 36,
 )
 
 enum class WidgetType(val label: String, val defaultOn: Boolean) {

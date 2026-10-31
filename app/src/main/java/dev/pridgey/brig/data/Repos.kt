@@ -68,18 +68,18 @@ object AppsRepo {
 
 // ---------------------------------------------------------------- Calendar
 
-data class CalEvent(val title: String, val begin: Long, val end: Long, val allDay: Boolean, val color: Int)
+data class CalEvent(val title: String, val begin: Long, val end: Long, val allDay: Boolean, val color: Int, val location: String = "")
 
 object CalendarRepo {
     fun hasPermission(ctx: Context) =
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED
 
-    fun upcoming(ctx: Context, limit: Int = 3): List<CalEvent> {
+    fun upcoming(ctx: Context, limit: Int = 3, lookaheadHours: Int = 36, includeAllDay: Boolean = true): List<CalEvent> {
         if (!hasPermission(ctx)) return emptyList()
         val now = System.currentTimeMillis()
         val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().also {
             ContentUris.appendId(it, now)
-            ContentUris.appendId(it, now + 36 * 3600_000L)
+            ContentUris.appendId(it, now + lookaheadHours * 3600_000L)
         }.build()
         val projection = arrayOf(
             CalendarContract.Instances.TITLE,
@@ -87,6 +87,7 @@ object CalendarRepo {
             CalendarContract.Instances.END,
             CalendarContract.Instances.ALL_DAY,
             CalendarContract.Instances.DISPLAY_COLOR,
+            CalendarContract.Instances.EVENT_LOCATION,
         )
         val out = mutableListOf<CalEvent>()
         runCatching {
@@ -95,12 +96,15 @@ object CalendarRepo {
                 "${CalendarContract.Instances.BEGIN} ASC",
             )?.use { c ->
                 while (c.moveToNext() && out.size < limit) {
+                    val allDay = c.getInt(3) == 1
+                    if (allDay && !includeAllDay) continue
                     out += CalEvent(
                         title = c.getString(0) ?: "(No title)",
                         begin = c.getLong(1),
                         end = c.getLong(2),
-                        allDay = c.getInt(3) == 1,
+                        allDay = allDay,
                         color = c.getInt(4),
+                        location = c.getString(5).orEmpty(),
                     )
                 }
             }
@@ -121,6 +125,26 @@ object CalendarRepo {
         if (e.allDay) return if (dayPrefix.isEmpty()) "All day" else dayPrefix.trim()
         if (e.begin <= System.currentTimeMillis()) return "Now"
         return dayPrefix + start.format(DateTimeFormatter.ofPattern("h:mm a"))
+    }
+
+    /** "in 25 min", "in 2h 10m", or "now · 20 min left". */
+    fun countdown(e: CalEvent, nowMs: Long = System.currentTimeMillis()): String {
+        fun span(ms: Long): String {
+            val mins = (ms / 60_000).coerceAtLeast(1)
+            return if (mins < 60) "$mins min" else "${mins / 60}h" + if (mins % 60 != 0L) " ${mins % 60}m" else ""
+        }
+        return when {
+            e.allDay -> "All day"
+            e.begin <= nowMs -> "Now · ${span(e.end - nowMs)} left"
+            else -> "in ${span(e.begin - nowMs)}"
+        }
+    }
+
+    fun timeRange(e: CalEvent): String {
+        if (e.allDay) return "All day"
+        val f = DateTimeFormatter.ofPattern("h:mm a")
+        val z = ZoneId.systemDefault()
+        return Instant.ofEpochMilli(e.begin).atZone(z).format(f) + " – " + Instant.ofEpochMilli(e.end).atZone(z).format(f)
     }
 }
 
