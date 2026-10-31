@@ -296,12 +296,8 @@ private fun MainContent(
                 .padding(top = 28.dp, bottom = with(density) { bottomHeight.toDp() } + 8.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            val centered = clockStyle == ClockStyle.DIGITAL || clockStyle == ClockStyle.ANALOG
-            val align = if (centered) Alignment.CenterHorizontally else Alignment.Start
-            Clock(
-                clockStyle, now, appearance.use24h, appearance.showSeconds, appearance.clockScale, accent,
-                Modifier.align(align),
-            )
+            val align = appearance.clockAlignment(clockStyle)
+            Clock(clockStyle, now, ClockSpec.from(appearance, accent), Modifier.align(align))
             appearance.secondaryZone?.let { z -> SecondaryZone(z, now, appearance.use24h, Modifier.align(align)) }
             if (effects.activeNames.isNotEmpty()) {
                 Text(
@@ -393,7 +389,10 @@ private fun BedsideContent(
     val warm = Color(0xFFE0674F)
     Box(modifier.systemBarsPadding()) {
         Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-            Clock(ClockStyle.DIGITAL, now, use24h, false, 1.25f, warm.copy(alpha = 0.8f), color = warm.copy(alpha = 0.75f))
+            Clock(
+                ClockStyle.DIGITAL, now,
+                ClockSpec(use24h, false, false, 1.25f, warm.copy(alpha = 0.8f), warm.copy(alpha = 0.75f), dev.pridgey.brig.util.BrigFonts.clock, null),
+            )
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AlarmChip(dimmed = true)
@@ -409,7 +408,7 @@ private fun BedsideContent(
 // ---------------------------------------------------------------- Glance chips
 
 @Composable
-private fun GlanceChip(text: String, icon: ImageVector? = null, emoji: String? = null, tint: Color = Color.White, dimmed: Boolean = false) {
+internal fun GlanceChip(text: String, icon: ImageVector? = null, emoji: String? = null, tint: Color = Color.White, dimmed: Boolean = false) {
     Row(
         Modifier
             .clip(CircleShape)
@@ -762,7 +761,7 @@ private fun MorphToggle(icon: ImageVector, label: String, active: Boolean, accen
 }
 
 @Composable
-private fun UnlockHint(gestures: Gestures, fingerprint: Boolean, accent: Color) {
+internal fun UnlockHint(gestures: Gestures, fingerprint: Boolean, accent: Color) {
     val dir = gestures.unlockDir()
     val icon = when (dir) {
         GestureDir.UP -> Icons.Filled.KeyboardArrowUp
@@ -833,6 +832,48 @@ private fun UnlockGate(
                 dev.pridgey.brig.data.UnlockMethod.MATH -> MathGate(config.mathDifficulty, accent, onSuccess, onCancel)
                 dev.pridgey.brig.data.UnlockMethod.SWIPE -> LaunchedEffect(Unit) { onSuccess() }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Preview mock
+
+/**
+ * A static stand-in for the lock screen, used by the settings previews. It draws the real
+ * background and clock with sample widgets, at true phone size (callers scale it down).
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun LockMock(settings: BrigSettings) {
+    val a = settings.appearance
+    val now by rememberNow(a.showSeconds)
+    val accent = a.accent?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
+    val align = a.clockAlignment()
+    Box(Modifier.fillMaxSize()) {
+        LockBackground(a, accent)
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = a.dim)))
+        Column(
+            Modifier.fillMaxSize().padding(horizontal = 22.dp).padding(top = 72.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Clock(a.clockStyle, now, ClockSpec.from(a, accent), Modifier.align(align))
+            a.secondaryZone?.let { SecondaryZone(it, now, a.use24h, Modifier.align(align)) }
+            if (settings.isWidgetOn(WidgetType.DATE)) {
+                Text(
+                    now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color.White.copy(alpha = 0.92f),
+                    modifier = Modifier.align(align),
+                )
+            }
+            FlowRow(Modifier.align(align), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (settings.isWidgetOn(WidgetType.ALARM)) GlanceChip("7:00 AM", icon = Icons.Filled.Alarm)
+                if (settings.isWidgetOn(WidgetType.BATTERY)) GlanceChip("82%", icon = Icons.Filled.BatteryStd)
+                if (settings.isWidgetOn(WidgetType.WEATHER)) GlanceChip("72°  75°/60°", emoji = "🌤️")
+            }
+        }
+        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 36.dp)) {
+            UnlockHint(settings.gestures, false, accent)
         }
     }
 }

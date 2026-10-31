@@ -25,12 +25,43 @@ data class BrigSettings(
     fun isWidgetOn(type: WidgetType) = widgetOrder().any { it.type == type && it.enabled }
 }
 
-enum class ClockStyle(val label: String) {
-    STACKED("Stacked"),
-    DIGITAL("Digital"),
-    ANALOG("Analog"),
-    WORDS("Words"),
-    MINIMAL("Minimal"),
+enum class ClockStyle(val label: String, val centered: Boolean) {
+    STACKED("Stacked", false),
+    DIGITAL("Digital", true),
+    FLIP("Flip", true),
+    BUBBLE("Bubbles", false),
+    ORBIT("Orbit", true),
+    GRADIENT("Gradient", false),
+    OUTLINE("Outline", false),
+    DOT_MATRIX("Dot matrix", true),
+    SEGMENT("Retro LED", true),
+    BINARY("Binary", true),
+    ANALOG("Analog", true),
+    WORDS("Words", false),
+    MINIMAL("Minimal", false),
+}
+
+enum class ClockFont(val label: String) {
+    DEFAULT("Google Sans"),
+    CONDENSED("Condensed"),
+    SERIF("Serif"),
+    MONO("Mono"),
+    SCRIPT("Script"),
+}
+
+enum class ClockWeight(val label: String) {
+    THIN("Thin"),
+    LIGHT("Light"),
+    REGULAR("Regular"),
+    BOLD("Bold"),
+    BLACK("Black"),
+}
+
+enum class ClockAlign(val label: String) {
+    AUTO("Auto"),
+    START("Left"),
+    CENTER("Center"),
+    END("Right"),
 }
 
 enum class BackgroundType(val label: String) {
@@ -48,6 +79,13 @@ data class Appearance(
     val showSeconds: Boolean = false,
     val secondaryZone: String? = null,
     val clockScale: Float = 1f,
+    /** Main clock color; null means white. The accent is used for the second element. */
+    val clockColor: Long? = null,
+    val clockFont: ClockFont = ClockFont.DEFAULT,
+    /** Null keeps each style's own weight. */
+    val clockWeight: ClockWeight? = null,
+    val leadingZero: Boolean = false,
+    val clockAlign: ClockAlign = ClockAlign.AUTO,
     val background: BackgroundType = BackgroundType.AURORA,
     val solidColor: Long = 0xFF101318,
     val accent: Long? = null,

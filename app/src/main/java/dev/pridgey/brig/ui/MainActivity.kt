@@ -302,7 +302,7 @@ private fun Hero(settings: BrigSettings, a11y: Boolean, update: SettingsUpdate) 
             color = if (settings.enabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
         ) {
             Column(Modifier.padding(20.dp)) {
-                LockPreview(settings, height = 300.dp)
+                LockPreview(settings, Modifier.height(300.dp)) { LockActivity.show(ctx) }
                 Spacer(Modifier.height(16.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {

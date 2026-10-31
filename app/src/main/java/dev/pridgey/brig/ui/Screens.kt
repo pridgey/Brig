@@ -1,6 +1,13 @@
 package dev.pridgey.brig.ui
 
 import android.content.Context
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.runtime.LaunchedEffect
+import dev.pridgey.brig.data.ClockAlign
+import dev.pridgey.brig.data.ClockFont
+import dev.pridgey.brig.data.ClockWeight
+import dev.pridgey.brig.lock.LockActivity
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
@@ -137,6 +144,13 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     fun set(f: (Appearance) -> Appearance) = update { it.copy(appearance = f(it.appearance)) }
+
+    // While a slider is being dragged, the preview shows this unsaved value.
+    var live by remember { mutableStateOf<Appearance?>(null) }
+    LaunchedEffect(a) { live = null }
+    val previewSettings = settings.copy(appearance = live ?: a)
+    fun preview(f: (Appearance) -> Appearance) { live = f(live ?: a) }
+
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) scope.launch {
             val path = withContext(Dispatchers.IO) { copyBackground(ctx, uri) }
@@ -144,14 +158,56 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
         }
     }
 
-    ScreenScaffold("Appearance", onBack) {
-        item { LockPreview(settings, height = 360.dp) }
+    ScreenScaffold(
+        "Appearance", onBack,
+        pinned = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                LockPreview(previewSettings, Modifier.weight(1f)) { LockActivity.show(ctx) }
+                Text(
+                    "Tap the preview to try it full screen",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        },
+    ) {
         item {
-            SettingsGroup("Clock") {
-                ChipChoice(ClockStyle.entries, a.clockStyle, { it.label }) { s -> set { it.copy(clockStyle = s) } }
+            SettingsGroup("Clock style") {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    items(ClockStyle.entries) { style ->
+                        ClockThumbnail(style, settings, selected = style == a.clockStyle) { set { it.copy(clockStyle = style) } }
+                    }
+                }
+            }
+        }
+        item {
+            SettingsGroup("Clock look") {
+                Text("Font", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 20.dp, top = 8.dp))
+                ChipChoice(ClockFont.entries, a.clockFont, { it.label }) { f -> set { it.copy(clockFont = f) } }
+                Text("Weight", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 20.dp, top = 4.dp))
+                ChipChoice(listOf<ClockWeight?>(null) + ClockWeight.entries, a.clockWeight, { it?.label ?: "Style default" }) { w ->
+                    set { it.copy(clockWeight = w) }
+                }
+                Text("Color", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 20.dp, top = 4.dp))
+                ColorSwatches(a.clockColor, allowAuto = true) { c -> set { it.copy(clockColor = c) } }
+                Hint("Auto is white. The accent color is used for the second half of the clock.")
+                Text("Position", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 20.dp, top = 4.dp))
+                ChipChoice(ClockAlign.entries, a.clockAlign, { it.label }) { al -> set { it.copy(clockAlign = al) } }
+                SliderRow(
+                    "Size", a.clockScale, 0.5f..1.5f, label = { "${(it * 100).roundToInt()}%" },
+                    onLive = { v -> preview { it.copy(clockScale = v) } },
+                ) { v -> set { it.copy(clockScale = v) } }
+            }
+        }
+        item {
+            SettingsGroup("Time format") {
                 SwitchRow("24-hour time", checked = a.use24h) { v -> set { it.copy(use24h = v) } }
+                if (!a.use24h) SwitchRow("Leading zero", "09:41 instead of 9:41", a.leadingZero) { v -> set { it.copy(leadingZero = v) } }
                 SwitchRow("Show seconds", "Uses a little more battery", a.showSeconds) { v -> set { it.copy(showSeconds = v) } }
-                SliderRow("Clock size", a.clockScale, 0.6f..1.4f, label = { "${(it * 100).roundToInt()}%" }) { v -> set { it.copy(clockScale = v) } }
                 DropdownRow(
                     "Second time zone", zones, a.secondaryZone ?: "",
                     label = { if (it.isEmpty()) "None" else it.substringAfterLast('/').replace('_', ' ') },
@@ -170,7 +226,10 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
                         ClickRow("Choose photo", "Pick any image from your gallery", Icons.Filled.Image) {
                             picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         }
-                        SliderRow("Blur", a.blur, 0f..1f, label = { "${(it * 100).roundToInt()}%" }) { v -> set { it.copy(blur = v) } }
+                        SliderRow(
+                            "Blur", a.blur, 0f..1f, label = { "${(it * 100).roundToInt()}%" },
+                            onLive = { v -> preview { it.copy(blur = v) } },
+                        ) { v -> set { it.copy(blur = v) } }
                     }
                     BackgroundType.SOLID -> ColorSwatches(a.solidColor, allowAuto = false, colors = SolidChoices) { c ->
                         if (c != null) set { it.copy(solidColor = c) }
@@ -179,7 +238,10 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
                     BackgroundType.TIME_OF_DAY -> Hint("The sky changes from dawn to dusk through the day.")
                     BackgroundType.PARTICLES -> Hint("Drifting, twinkling stars tinted with your accent.")
                 }
-                SliderRow("Dim", a.dim, 0f..0.8f, label = { "${(it * 100).roundToInt()}%" }) { v -> set { it.copy(dim = v) } }
+                SliderRow(
+                    "Dim", a.dim, 0f..0.8f, label = { "${(it * 100).roundToInt()}%" },
+                    onLive = { v -> preview { it.copy(dim = v) } },
+                ) { v -> set { it.copy(dim = v) } }
             }
         }
         item {

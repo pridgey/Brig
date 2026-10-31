@@ -1,5 +1,16 @@
 package dev.pridgey.brig.ui
 
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.platform.LocalDensity
+import dev.pridgey.brig.lock.ClockSpec
+import dev.pridgey.brig.lock.LockMock
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -94,35 +105,92 @@ import java.time.format.DateTimeFormatter
 
 typealias SettingsUpdate = ((BrigSettings) -> BrigSettings) -> Unit
 
+/**
+ * Standard screen layout. With [pinned], that content stays fixed under a compact top bar and
+ * shrinks from [pinnedMax] to [pinnedMin] as the list scrolls, so it never scrolls away.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScreenScaffold(title: String, onBack: () -> Unit, content: LazyListScope.() -> Unit) {
-    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
+fun ScreenScaffold(
+    title: String,
+    onBack: () -> Unit,
+    pinned: (@Composable () -> Unit)? = null,
+    pinnedMax: Dp = 340.dp,
+    pinnedMin: Dp = 200.dp,
+    content: LazyListScope.() -> Unit,
+) {
+    val density = LocalDensity.current
+    val maxPx = with(density) { pinnedMax.toPx() }
+    val minPx = with(density) { pinnedMin.toPx() }
+    var pinnedPx by rememberSaveable { mutableFloatStateOf(maxPx) }
+    val collapse = remember(maxPx, minPx, pinned != null) {
+        object : NestedScrollConnection {
+            // Scrolling up shrinks the header before the list moves...
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (pinned == null || available.y >= 0f) return Offset.Zero
+                val next = (pinnedPx + available.y).coerceAtLeast(minPx)
+                val used = next - pinnedPx
+                pinnedPx = next
+                return Offset(0f, used)
+            }
+
+            // ...and it grows back once the list is scrolled to the top.
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (pinned == null || available.y <= 0f) return Offset.Zero
+                val next = (pinnedPx + available.y).coerceAtMost(maxPx)
+                val used = next - pinnedPx
+                pinnedPx = next
+                return Offset(0f, used)
+            }
+        }
+    }
+    val scroll = if (pinned == null) {
+        TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
+    } else {
+        TopAppBarDefaults.pinnedScrollBehavior(rememberTopAppBarState())
+    }
+    val back: @Composable () -> Unit = {
+        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+    }
     Scaffold(
-        modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
+        modifier = Modifier.nestedScroll(collapse).nestedScroll(scroll.nestedScrollConnection),
         topBar = {
-            LargeTopAppBar(
-                title = { Text(title, style = MaterialTheme.typography.displaySmall) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                },
-                scrollBehavior = scroll,
-                colors = TopAppBarDefaults.largeTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-            )
+            if (pinned == null) {
+                LargeTopAppBar(
+                    title = { Text(title, style = MaterialTheme.typography.displaySmall) },
+                    navigationIcon = back,
+                    scrollBehavior = scroll,
+                    colors = TopAppBarDefaults.largeTopAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background,
+                        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    ),
+                )
+            } else {
+                TopAppBar(
+                    title = { Text(title, style = MaterialTheme.typography.headlineMedium) },
+                    navigationIcon = back,
+                    scrollBehavior = scroll,
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                )
+            }
         },
     ) { pad ->
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                start = 16.dp, end = 16.dp,
-                top = pad.calculateTopPadding() + 4.dp, bottom = pad.calculateBottomPadding() + 40.dp,
-            ),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            content = content,
-        )
+        Column(Modifier.fillMaxSize().padding(top = pad.calculateTopPadding())) {
+            if (pinned != null) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(with(density) { pinnedPx.toDp() })
+                        .padding(bottom = 8.dp),
+                ) { pinned() }
+            }
+            LazyColumn(
+                Modifier.weight(1f),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = pad.calculateBottomPadding() + 40.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                content = content,
+            )
+        }
     }
 }
 
@@ -169,6 +237,7 @@ fun SliderRow(
     range: ClosedFloatingPointRange<Float>,
     steps: Int = 0,
     label: (Float) -> String,
+    onLive: ((Float) -> Unit)? = null,
     onChange: (Float) -> Unit,
 ) {
     var local by remember(value) { mutableFloatStateOf(value) }
@@ -179,7 +248,7 @@ fun SliderRow(
                 Text(label(local), style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
             }
         }
-        Slider(value = local, onValueChange = { local = it }, onValueChangeFinished = { onChange(local) }, valueRange = range, steps = steps)
+        Slider(value = local, onValueChange = { local = it; onLive?.invoke(it) }, onValueChangeFinished = { onChange(local) }, valueRange = range, steps = steps)
     }
 }
 
@@ -331,45 +400,78 @@ fun AppPickerDialog(onDismiss: () -> Unit, onPick: (AppInfo) -> Unit) {
     )
 }
 
-/** A live, scaled-down lock screen inside a phone frame. */
+private val PhoneWidth = 412.dp
+private val PhoneHeight = 892.dp
+
+/**
+ * A live lock screen inside a phone frame. It lays out at real phone size and is scaled to fit,
+ * so the preview matches the real thing exactly. Fills the height it is given.
+ */
 @Composable
-fun LockPreview(settings: BrigSettings, modifier: Modifier = Modifier, height: Dp = 320.dp) {
+fun LockPreview(settings: BrigSettings, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
+    BoxWithConstraints(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        val frameH = maxHeight
+        val frameW = frameH * (PhoneWidth.value / PhoneHeight.value)
+        val s = frameW.value / PhoneWidth.value
+        val shape = RoundedCornerShape(frameW * 0.13f)
+        Box(
+            Modifier
+                .size(frameW, frameH)
+                .clip(shape)
+                .border(BorderStroke((frameW * 0.022f).coerceAtLeast(3.dp), MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)), shape)
+                .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        ) {
+            Box(
+                Modifier
+                    .requiredSize(PhoneWidth, PhoneHeight)
+                    .graphicsLayer {
+                        scaleX = s
+                        scaleY = s
+                    },
+            ) {
+                BrigTheme(accent = settings.appearance.accent, dark = true) { LockMock(settings) }
+            }
+        }
+    }
+}
+
+/** A small live sample of one clock style, for the style picker. */
+@Composable
+fun ClockThumbnail(style: ClockStyle, settings: BrigSettings, selected: Boolean, onClick: () -> Unit) {
     val now by rememberNow(false)
     val a = settings.appearance
     val accent = a.accent?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
-    Box(modifier.fillMaxWidth().height(height), contentAlignment = Alignment.Center) {
+    val source = remember { MutableInteractionSource() }
+    val shape = RoundedCornerShape(26.dp)
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             Modifier
-                .fillMaxHeight()
-                .aspectRatio(9f / 19.5f)
-                .clip(RoundedCornerShape(34.dp))
-                .border(BorderStroke(5.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)), RoundedCornerShape(34.dp)),
+                .size(118.dp, 132.dp)
+                .pressScale(source, 0.92f)
+                .clip(shape)
+                .background(Color(0xFF14161B))
+                .then(if (selected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, shape) else Modifier)
+                .clickable(source, null, onClick = onClick),
+            contentAlignment = Alignment.Center,
         ) {
-            LockBackground(a, accent)
-            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = a.dim)))
-            Column(Modifier.padding(horizontal = 14.dp).padding(top = 30.dp)) {
-                val centered = a.clockStyle == ClockStyle.DIGITAL || a.clockStyle == ClockStyle.ANALOG
-                Clock(
-                    a.clockStyle, now, a.use24h, false, a.clockScale * 0.36f, accent,
-                    Modifier.align(if (centered) Alignment.CenterHorizontally else Alignment.Start),
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    now.format(DateTimeFormatter.ofPattern("EEEE, MMM d")),
-                    color = Color.White.copy(alpha = 0.9f), fontSize = 10.sp, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.align(if (centered) Alignment.CenterHorizontally else Alignment.Start),
-                )
+            // Lay the clock out at full size, then shrink it to fit the card.
+            Box(Modifier.requiredSize(360.dp, 400.dp).graphicsLayer { scaleX = 0.3f; scaleY = 0.3f }, contentAlignment = Alignment.Center) {
+                Clock(style, now, ClockSpec.from(a, accent, scale = 1f).copy(showSeconds = false))
             }
-            Box(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 10.dp)
-                    .width(48.dp)
-                    .height(4.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.6f)),
-            )
+            if (selected) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(8.dp).size(24.dp)
+                        .clip(PolygonShape(BrigShapes.cookie9)).background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Filled.Check, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onPrimary) }
+            }
         }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            style.label,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
