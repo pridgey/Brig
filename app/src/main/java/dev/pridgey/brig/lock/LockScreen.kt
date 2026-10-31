@@ -123,6 +123,8 @@ import dev.pridgey.brig.data.WeatherConfig
 import dev.pridgey.brig.data.WeatherNow
 import dev.pridgey.brig.data.WeatherRepo
 import dev.pridgey.brig.data.WidgetType
+import dev.pridgey.brig.data.WidgetZone
+import androidx.compose.ui.unit.Dp
 import dev.pridgey.brig.service.BrigNotification
 import dev.pridgey.brig.service.BrigNotificationListener
 import dev.pridgey.brig.service.MediaRepo
@@ -256,7 +258,6 @@ private sealed interface WidgetGroup {
 }
 
 private val chipTypes = setOf(WidgetType.ALARM, WidgetType.BATTERY, WidgetType.WEATHER, WidgetType.STATS)
-private val bottomTypes = setOf(WidgetType.SHORTCUTS, WidgetType.TOGGLES)
 
 private fun groupWidgets(types: List<WidgetType>): List<WidgetGroup> {
     val out = mutableListOf<WidgetGroup>()
@@ -272,7 +273,69 @@ private fun groupWidgets(types: List<WidgetType>): List<WidgetGroup> {
     return out
 }
 
+/**
+ * The two-zone lock screen layout shared by the real lock screen and the settings preview.
+ * Top-zone widgets stack under the clock; bottom-zone widgets stack above the unlock hint.
+ */
 @OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ZonedLayout(
+    settings: BrigSettings,
+    align: Alignment.Horizontal,
+    modifier: Modifier,
+    extraTop: Dp = 0.dp,
+    extraBottom: Dp = 0.dp,
+    header: @Composable ColumnScope.() -> Unit,
+    chip: @Composable (WidgetType) -> Unit,
+    single: @Composable ColumnScope.(type: WidgetType, inBottom: Boolean) -> Unit,
+    hint: @Composable () -> Unit,
+) {
+    val density = LocalDensity.current
+    val layout = settings.appearance.layout
+    var bottomHeight by remember { mutableIntStateOf(0) }
+    val enabled = settings.widgetOrder().filter { it.enabled }
+    val topTypes = enabled.filter { it.zoneOrDefault() == WidgetZone.TOP }.map { it.type }
+    val bottomTypes = enabled.filter { it.zoneOrDefault() == WidgetZone.BOTTOM }.map { it.type }
+
+    @Composable
+    fun ColumnScope.groups(types: List<WidgetType>, groupAlign: Alignment.Horizontal, inBottom: Boolean) {
+        groupWidgets(types).forEach { group ->
+            when (group) {
+                is WidgetGroup.Chips -> FlowRow(
+                    Modifier.align(groupAlign),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) { group.types.forEach { chip(it) } }
+                is WidgetGroup.Single -> single(group.type, inBottom)
+            }
+        }
+    }
+
+    Box(modifier.padding(horizontal = layout.side.dp)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(top = extraTop + layout.top.dp, bottom = with(density) { bottomHeight.toDp() } + 8.dp),
+            verticalArrangement = Arrangement.spacedBy(layout.spacing.dp),
+        ) {
+            header()
+            groups(topTypes, align, inBottom = false)
+        }
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .onSizeChanged { bottomHeight = it.height }
+                .padding(bottom = extraBottom + layout.bottom.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(maxOf(layout.spacing, 12).dp),
+        ) {
+            groups(bottomTypes, Alignment.CenterHorizontally, inBottom = true)
+            hint()
+        }
+    }
+}
+
 @Composable
 private fun MainContent(
     settings: BrigSettings,
@@ -284,20 +347,11 @@ private fun MainContent(
     controller: LockController,
     modifier: Modifier,
 ) {
-    val density = LocalDensity.current
-    var bottomHeight by remember { mutableIntStateOf(0) }
-    val enabled = settings.widgetOrder().filter { it.enabled }.map { it.type }
     val appearance = settings.appearance
-
-    val layout = appearance.layout
-    Box(modifier.systemBarsPadding().padding(horizontal = layout.side.dp)) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(top = layout.top.dp, bottom = with(density) { bottomHeight.toDp() } + 8.dp),
-            verticalArrangement = Arrangement.spacedBy(layout.spacing.dp),
-        ) {
-            val align = appearance.clockAlignment(clockStyle)
+    val align = appearance.clockAlignment(clockStyle)
+    ZonedLayout(
+        settings, align, modifier.systemBarsPadding(),
+        header = {
             Clock(clockStyle, now, ClockSpec.from(appearance, accent), Modifier.align(align))
             appearance.secondaryZone?.let { z -> SecondaryZone(z, now, appearance.use24h, Modifier.align(align)) }
             if (effects.activeNames.isNotEmpty()) {
@@ -308,61 +362,43 @@ private fun MainContent(
                     modifier = Modifier.align(align),
                 )
             }
-
-            groupWidgets(enabled.filterNot { it in bottomTypes }).forEach { group ->
-                when (group) {
-                    is WidgetGroup.Chips -> FlowRow(
-                        Modifier.align(align),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        group.types.forEach { type ->
-                            when (type) {
-                                WidgetType.ALARM -> AlarmChip()
-                                WidgetType.BATTERY -> BatteryChip(battery, accent)
-                                WidgetType.WEATHER -> WeatherChip(settings.weather)
-                                WidgetType.STATS -> StatsChip()
-                                else -> Unit
-                            }
-                        }
-                    }
-                    is WidgetGroup.Single -> when (group.type) {
-                        WidgetType.DATE -> Text(
-                            now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
-                            style = MaterialTheme.typography.titleLarge,
-                            color = Color.White.copy(alpha = 0.92f),
-                            modifier = Modifier.align(align),
-                        )
-                        WidgetType.CALENDAR -> LiveCalendar(now, settings.calendar, accent)
-                        WidgetType.MEDIA -> LiveMedia(settings.media, accent, now)
-                        WidgetType.QUOTE -> QuoteWidget(now)
-                        WidgetType.NOTIFICATIONS -> if (!effects.hideNotifications) {
-                            Box(Modifier.weight(1f, fill = false)) {
-                                NotificationsWidget(settings, effects, controller)
-                            }
-                        }
-                        else -> Unit
+        },
+        chip = { type ->
+            when (type) {
+                WidgetType.ALARM -> AlarmChip()
+                WidgetType.BATTERY -> BatteryChip(battery, accent)
+                WidgetType.WEATHER -> WeatherChip(settings.weather)
+                WidgetType.STATS -> StatsChip()
+                else -> Unit
+            }
+        },
+        single = { type, inBottom ->
+            val a = if (inBottom) Alignment.CenterHorizontally else align
+            when (type) {
+                WidgetType.DATE -> Text(
+                    now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color.White.copy(alpha = 0.92f),
+                    modifier = Modifier.align(a),
+                )
+                WidgetType.CALENDAR -> LiveCalendar(now, settings.calendar, accent)
+                WidgetType.MEDIA -> LiveMedia(settings.media, accent, now)
+                WidgetType.QUOTE -> QuoteWidget(now)
+                WidgetType.NOTIFICATIONS -> if (!effects.hideNotifications) {
+                    // In the top zone the list may shrink to make room; at the bottom it's capped by "max shown".
+                    Box(if (inBottom) Modifier else Modifier.weight(1f, fill = false)) {
+                        NotificationsWidget(settings, effects, controller)
                     }
                 }
+                WidgetType.SHORTCUTS -> if (settings.shortcuts.isNotEmpty()) {
+                    Box(Modifier.align(a)) { ShortcutsRow(settings.shortcuts, controller) }
+                }
+                WidgetType.TOGGLES -> Box(Modifier.align(a)) { TogglesRow(accent, controller) }
+                else -> Unit
             }
-        }
-
-        Column(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .onSizeChanged { bottomHeight = it.height }
-                .padding(bottom = layout.bottom.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            if (WidgetType.SHORTCUTS in enabled && settings.shortcuts.isNotEmpty()) {
-                ShortcutsRow(settings.shortcuts, controller)
-            }
-            if (WidgetType.TOGGLES in enabled) TogglesRow(accent, controller)
-            UnlockHint(settings.gestures, controller.systemLockSecure, accent)
-        }
-    }
+        },
+        hint = { UnlockHint(settings.gestures, controller.systemLockSecure, accent) },
+    )
 }
 
 @Composable
@@ -797,97 +833,76 @@ private fun UnlockGate(
 // ---------------------------------------------------------------- Preview mock
 
 /**
- * A stand-in for the lock screen used by the settings previews. It follows the real layout
- * (widget order, spacing, styles) with sample data, at true phone size (callers scale it down).
+ * A stand-in for the lock screen used by the settings previews. Same layout as the real thing,
+ * filled with sample data, at true phone size (callers scale it down).
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun LockMock(settings: BrigSettings) {
     val ctx = LocalContext.current
     val a = settings.appearance
-    val layout = a.layout
     val now by rememberNow(a.showSeconds)
     val accent = a.accent?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
     val align = a.clockAlignment()
-    val enabled = settings.widgetOrder().filter { it.enabled }.map { it.type }
     val nowMs = remember(now.minute) { System.currentTimeMillis() }
     val events = remember(nowMs, settings.calendar.count) { sampleEvents(nowMs).take(settings.calendar.count) }
     Box(Modifier.fillMaxSize()) {
         LockBackground(a, accent)
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = a.dim)))
-        Column(
-            Modifier.fillMaxSize().padding(horizontal = layout.side.dp).padding(top = 44.dp + layout.top.dp, bottom = 190.dp),
-            verticalArrangement = Arrangement.spacedBy(layout.spacing.dp),
-        ) {
-            Clock(a.clockStyle, now, ClockSpec.from(a, accent), Modifier.align(align))
-            a.secondaryZone?.let { SecondaryZone(it, now, a.use24h, Modifier.align(align)) }
-            groupWidgets(enabled.filterNot { it in bottomTypes }).forEach { group ->
-                when (group) {
-                    is WidgetGroup.Chips -> FlowRow(
-                        Modifier.align(align),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        group.types.forEach { type ->
-                            when (type) {
-                                WidgetType.ALARM -> GlanceChip("7:00 AM", icon = Icons.Filled.Alarm)
-                                WidgetType.BATTERY -> GlanceChip("82%", icon = Icons.Filled.BatteryStd)
-                                WidgetType.WEATHER -> GlanceChip("72°  75°/60°", emoji = "🌤️")
-                                WidgetType.STATS -> GlanceChip("12 unlocks · 30 wakes", emoji = "📊")
-                                else -> Unit
+        ZonedLayout(
+            settings, align, Modifier.fillMaxSize(), extraTop = 44.dp, extraBottom = 24.dp,
+            header = {
+                Clock(a.clockStyle, now, ClockSpec.from(a, accent), Modifier.align(align))
+                a.secondaryZone?.let { SecondaryZone(it, now, a.use24h, Modifier.align(align)) }
+            },
+            chip = { type ->
+                when (type) {
+                    WidgetType.ALARM -> GlanceChip("7:00 AM", icon = Icons.Filled.Alarm)
+                    WidgetType.BATTERY -> GlanceChip("82%", icon = Icons.Filled.BatteryStd)
+                    WidgetType.WEATHER -> GlanceChip("72°  75°/60°", emoji = "🌤️")
+                    WidgetType.STATS -> GlanceChip("12 unlocks · 30 wakes", emoji = "📊")
+                    else -> Unit
+                }
+            },
+            single = { type, inBottom ->
+                val al = if (inBottom) Alignment.CenterHorizontally else align
+                when (type) {
+                    WidgetType.DATE -> Text(
+                        now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White.copy(alpha = 0.92f),
+                        modifier = Modifier.align(al),
+                    )
+                    WidgetType.MEDIA -> MediaView(sampleMedia(), settings.media, accent, MediaActions.None)
+                    WidgetType.CALENDAR -> CalendarView(events, settings.calendar, accent, nowMs)
+                    WidgetType.QUOTE -> QuoteWidget(now)
+                    WidgetType.NOTIFICATIONS -> GlassCard {
+                        Text("Messages · 2m", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.7f))
+                        Text(if (settings.notifications.hideAllContent) "Content hidden" else "Sam", style = MaterialTheme.typography.titleSmall)
+                        if (!settings.notifications.hideAllContent) {
+                            Text("Running 5 min late! Grab us a table?", style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.85f))
+                        }
+                    }
+                    WidgetType.SHORTCUTS -> if (settings.shortcuts.isNotEmpty()) {
+                        Row(Modifier.align(al), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            settings.shortcuts.forEachIndexed { i, pkg ->
+                                Box(
+                                    Modifier.size(52.dp).clip(PolygonShape(BrigShapes.badges[i % BrigShapes.badges.size])).background(Color.White.copy(alpha = 0.14f)),
+                                    contentAlignment = Alignment.Center,
+                                ) { remember(pkg) { AppsRepo.icon(ctx, pkg) }?.let { Image(it, null, Modifier.size(34.dp)) } }
                             }
                         }
                     }
-                    is WidgetGroup.Single -> when (group.type) {
-                        WidgetType.DATE -> Text(
-                            now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
-                            style = MaterialTheme.typography.titleLarge,
-                            color = Color.White.copy(alpha = 0.92f),
-                            modifier = Modifier.align(align),
-                        )
-                        WidgetType.MEDIA -> MediaView(sampleMedia(), settings.media, accent, MediaActions.None)
-                        WidgetType.CALENDAR -> CalendarView(events, settings.calendar, accent, nowMs)
-                        WidgetType.QUOTE -> QuoteWidget(now)
-                        WidgetType.NOTIFICATIONS -> GlassCard {
-                            Text("Messages · 2m", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.7f))
-                            Text(
-                                if (settings.notifications.hideAllContent) "Content hidden" else "Sam",
-                                style = MaterialTheme.typography.titleSmall,
-                            )
-                            if (!settings.notifications.hideAllContent) {
-                                Text("Running 5 min late! Grab us a table?", style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.85f))
+                    WidgetType.TOGGLES -> Row(Modifier.align(al), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                        listOf(Icons.Filled.FlashlightOff, Icons.Filled.DoNotDisturbOff, Icons.AutoMirrored.Filled.VolumeUp).forEach {
+                            Box(Modifier.size(58.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+                                Icon(it, null, tint = Color.White)
                             }
                         }
-                        else -> Unit
                     }
+                    else -> Unit
                 }
-            }
-        }
-        Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 24.dp + layout.bottom.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            if (WidgetType.SHORTCUTS in enabled && settings.shortcuts.isNotEmpty()) {
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    settings.shortcuts.forEachIndexed { i, pkg ->
-                        Box(
-                            Modifier.size(52.dp).clip(PolygonShape(BrigShapes.badges[i % BrigShapes.badges.size])).background(Color.White.copy(alpha = 0.14f)),
-                            contentAlignment = Alignment.Center,
-                        ) { remember(pkg) { AppsRepo.icon(ctx, pkg) }?.let { Image(it, null, Modifier.size(34.dp)) } }
-                    }
-                }
-            }
-            if (WidgetType.TOGGLES in enabled) {
-                Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                    listOf(Icons.Filled.FlashlightOff, Icons.Filled.DoNotDisturbOff, Icons.AutoMirrored.Filled.VolumeUp).forEach {
-                        Box(Modifier.size(58.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
-                            Icon(it, null, tint = Color.White)
-                        }
-                    }
-                }
-            }
-            UnlockHint(settings.gestures, false, accent)
-        }
+            },
+            hint = { UnlockHint(settings.gestures, false, accent) },
+        )
     }
 }

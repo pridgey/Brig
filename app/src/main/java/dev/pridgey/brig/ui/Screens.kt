@@ -1,6 +1,9 @@
 package dev.pridgey.brig.ui
 
 import android.content.Context
+import dev.pridgey.brig.data.WidgetZone
+import androidx.compose.material.icons.filled.VerticalAlignBottom
+import androidx.compose.material.icons.filled.VerticalAlignTop
 import dev.pridgey.brig.data.CalendarConfig
 import dev.pridgey.brig.data.CalendarRepo
 import dev.pridgey.brig.data.CalendarStyle
@@ -361,33 +364,54 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
         "Widgets", onBack,
         pinned = { LockPreview(live ?: settings, Modifier.fillMaxSize()) { LockActivity.show(ctx) } },
     ) {
-        item {
-            SettingsGroup("Order & visibility") {
-                order.forEachIndexed { i, w ->
-                    ListItem(
-                        headlineContent = { Text(w.type.label, style = MaterialTheme.typography.titleMedium) },
-                        supportingContent = when (w.type) {
-                            WidgetType.SHORTCUTS, WidgetType.TOGGLES -> { { Text("Pinned to the bottom") } }
-                            WidgetType.ALARM, WidgetType.BATTERY, WidgetType.WEATHER, WidgetType.STATS -> { { Text("Shown as a glance chip") } }
-                            else -> null
-                        },
-                        leadingContent = {
-                            Column {
-                                IconButton(onClick = {
-                                    if (i > 0) setWidgets(order.toMutableList().apply { add(i - 1, removeAt(i)) })
-                                }, enabled = i > 0, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.KeyboardArrowUp, "Move up") }
-                                IconButton(onClick = {
-                                    if (i < order.lastIndex) setWidgets(order.toMutableList().apply { add(i + 1, removeAt(i)) })
-                                }, enabled = i < order.lastIndex, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.KeyboardArrowDown, "Move down") }
-                            }
-                        },
-                        trailingContent = {
-                            Switch(checked = w.enabled, onCheckedChange = { on ->
-                                setWidgets(order.map { if (it.type == w.type) it.copy(enabled = on) else it })
-                            })
-                        },
-                        colors = itemColors,
-                    )
+        WidgetZone.entries.forEach { zone ->
+            item {
+                // Indices (into the full list) of this zone's widgets, in display order.
+                val idx = order.indices.filter { order[it].zoneOrDefault() == zone }
+                fun swap(a: Int, b: Int) = setWidgets(order.toMutableList().apply { val t = this[a]; this[a] = this[b]; this[b] = t })
+                SettingsGroup(if (zone == WidgetZone.TOP) "Top of screen" else "Bottom of screen") {
+                    if (idx.isEmpty()) Hint("Nothing here yet. Use the Top/Bottom button on any widget to move it.")
+                    idx.forEachIndexed { pos, i ->
+                        val w = order[i]
+                        ListItem(
+                            headlineContent = { Text(w.type.label, style = MaterialTheme.typography.titleMedium) },
+                            supportingContent = when (w.type) {
+                                WidgetType.ALARM, WidgetType.BATTERY, WidgetType.WEATHER, WidgetType.STATS -> { { Text("Glance chip") } }
+                                else -> null
+                            },
+                            leadingContent = {
+                                Column {
+                                    IconButton(onClick = { swap(i, idx[pos - 1]) }, enabled = pos > 0, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Filled.KeyboardArrowUp, "Move up")
+                                    }
+                                    IconButton(onClick = { swap(i, idx[pos + 1]) }, enabled = pos < idx.lastIndex, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Filled.KeyboardArrowDown, "Move down")
+                                    }
+                                }
+                            },
+                            trailingContent = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    val other = if (zone == WidgetZone.TOP) WidgetZone.BOTTOM else WidgetZone.TOP
+                                    AssistChip(
+                                        onClick = { setWidgets(order.map { if (it.type == w.type) it.copy(zone = other) else it }) },
+                                        label = { Text(other.label) },
+                                        leadingIcon = {
+                                            Icon(
+                                                if (other == WidgetZone.BOTTOM) Icons.Filled.VerticalAlignBottom else Icons.Filled.VerticalAlignTop,
+                                                "Move to ${other.label.lowercase()}", Modifier.size(18.dp),
+                                            )
+                                        },
+                                        shape = CircleShape,
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Switch(checked = w.enabled, onCheckedChange = { on ->
+                                        setWidgets(order.map { if (it.type == w.type) it.copy(enabled = on) else it })
+                                    })
+                                }
+                            },
+                            colors = itemColors,
+                        )
+                    }
                 }
             }
         }

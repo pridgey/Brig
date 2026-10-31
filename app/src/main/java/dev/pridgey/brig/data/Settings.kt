@@ -174,7 +174,12 @@ data class CalendarConfig(
     val lookaheadHours: Int = 36,
 )
 
-enum class WidgetType(val label: String, val defaultOn: Boolean) {
+enum class WidgetZone(val label: String) {
+    TOP("Top"),
+    BOTTOM("Bottom"),
+}
+
+enum class WidgetType(val label: String, val defaultOn: Boolean, val defaultZone: WidgetZone = WidgetZone.TOP) {
     DATE("Date", true),
     ALARM("Next alarm", true),
     BATTERY("Battery", true),
@@ -184,12 +189,19 @@ enum class WidgetType(val label: String, val defaultOn: Boolean) {
     MEDIA("Media controls", true),
     NOTIFICATIONS("Notifications", true),
     QUOTE("Quote of the day", false),
-    SHORTCUTS("App shortcuts", true),
-    TOGGLES("Quick toggles", true),
+    SHORTCUTS("App shortcuts", true, WidgetZone.BOTTOM),
+    TOGGLES("Quick toggles", true, WidgetZone.BOTTOM),
 }
 
 @Serializable
-data class WidgetConfig(val type: WidgetType, val enabled: Boolean)
+data class WidgetConfig(
+    val type: WidgetType,
+    val enabled: Boolean,
+    /** Null means the widget's default zone (older saved settings have no zone). */
+    val zone: WidgetZone? = null,
+) {
+    fun zoneOrDefault() = zone ?: type.defaultZone
+}
 
 enum class AppNotificationMode(val label: String) {
     SHOW("Show"),

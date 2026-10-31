@@ -151,4 +151,14 @@ class LogicTest {
         assertEquals(12f, r2, 0.01f); assertEquals(99f, g2, 0.01f); assertEquals(230f, b2, 0.01f)
         PhotoEffect.entries.forEach { assertEquals(20, PhotoFx.effect(it, Color.Blue).size) }
     }
+
+    @Test
+    fun widgetZonesDefaultForOldSettings() {
+        val old = """{"widgets":[{"type":"MEDIA","enabled":true},{"type":"TOGGLES","enabled":true}]}"""
+        val w = SettingsRepository.decode(old).widgets
+        assertEquals(dev.pridgey.brig.data.WidgetZone.TOP, w[0].zoneOrDefault())
+        assertEquals(dev.pridgey.brig.data.WidgetZone.BOTTOM, w[1].zoneOrDefault())
+        val moved = w[0].copy(zone = dev.pridgey.brig.data.WidgetZone.BOTTOM)
+        assertEquals(dev.pridgey.brig.data.WidgetZone.BOTTOM, moved.zoneOrDefault())
+    }
 }
