@@ -1,0 +1,58 @@
+name: Build & release APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Decode signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.BRIG_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::BRIG_KEYSTORE_B64 secret is missing. Every release must use the same key or updates won't install."
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/brig.jks"
+
+      - name: Unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Build signed release APK
+        env:
+          BRIG_VERSION_CODE: ${{ github.run_number }}
+          BRIG_KEYSTORE_PATH: ${{ runner.temp }}/brig.jks
+          BRIG_KEYSTORE_PASSWORD: ${{ secrets.BRIG_KEYSTORE_PASSWORD }}
+          BRIG_KEY_ALIAS: ${{ secrets.BRIG_KEY_ALIAS }}
+          BRIG_KEY_PASSWORD: ${{ secrets.BRIG_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          N: ${{ github.run_number }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk "Brig-1.$N.apk"
+          printf '%s\n\nCommit: %s\n' "${COMMIT_MSG:-Manual build}" "$GITHUB_SHA" > notes.md
+          gh release create "v1.$N" "Brig-1.$N.apk" --title "Brig 1.$N" --notes-file notes.md --latest

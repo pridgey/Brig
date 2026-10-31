@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Brig</string>
+    <string name="a11y_label">Brig lock trigger</string>
+    <string name="a11y_description">Brig uses this to show its lock screen the moment your display turns off, and to turn the screen off with a double-tap. It does not read or collect anything on your screen.</string>
+</resources>
