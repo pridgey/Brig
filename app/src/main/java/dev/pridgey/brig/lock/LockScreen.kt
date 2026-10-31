@@ -123,6 +123,9 @@ import dev.pridgey.brig.data.WeatherConfig
 import dev.pridgey.brig.data.WeatherNow
 import dev.pridgey.brig.data.WeatherRepo
 import dev.pridgey.brig.data.WidgetType
+import dev.pridgey.brig.ui.resolveAccent
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import dev.pridgey.brig.data.WidgetZone
 import androidx.compose.ui.unit.Dp
 import dev.pridgey.brig.service.BrigNotification
@@ -145,8 +148,18 @@ import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 import android.media.AudioManager
 
+/** Background opacity for glance chips, from Appearance. */
+val LocalChipAlpha = compositionLocalOf { 0.12f }
+
 @Composable
 fun LockScreen(settings: BrigSettings, controller: LockController) {
+    CompositionLocalProvider(LocalChipAlpha provides settings.appearance.chipOpacity) {
+        LockScreenContent(settings, controller)
+    }
+}
+
+@Composable
+private fun LockScreenContent(settings: BrigSettings, controller: LockController) {
     val context = LocalContext.current
     val appearance = settings.appearance
     val now by rememberNow(appearance.showSeconds)
@@ -156,7 +169,7 @@ fun LockScreen(settings: BrigSettings, controller: LockController) {
     val effects = remember(settings.profiles, minuteOfDay, battery.charging, headphones) {
         ProfileEngine.resolve(settings.profiles, minuteOfDay, battery.charging, headphones)
     }
-    val accent = (effects.accent ?: appearance.accent)?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
+    val accent = resolveAccent(effects.accent ?: appearance.accent)
     val clockStyle = effects.clockStyle ?: appearance.clockStyle
     val dim = effects.dim ?: appearance.dim
 
@@ -449,7 +462,7 @@ internal fun GlanceChip(text: String, icon: ImageVector? = null, emoji: String? 
     Row(
         Modifier
             .clip(CircleShape)
-            .background(Color.White.copy(alpha = if (dimmed) 0.05f else 0.12f))
+            .background(Color.White.copy(alpha = LocalChipAlpha.current * if (dimmed) 0.4f else 1f))
             .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -838,10 +851,15 @@ private fun UnlockGate(
  */
 @Composable
 fun LockMock(settings: BrigSettings) {
+    CompositionLocalProvider(LocalChipAlpha provides settings.appearance.chipOpacity) { LockMockContent(settings) }
+}
+
+@Composable
+private fun LockMockContent(settings: BrigSettings) {
     val ctx = LocalContext.current
     val a = settings.appearance
     val now by rememberNow(a.showSeconds)
-    val accent = a.accent?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
+    val accent = resolveAccent(a.accent)
     val align = a.clockAlignment()
     val nowMs = remember(now.minute) { System.currentTimeMillis() }
     val events = remember(nowMs, settings.calendar.count) { sampleEvents(nowMs).take(settings.calendar.count) }

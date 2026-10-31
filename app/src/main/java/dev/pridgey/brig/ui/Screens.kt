@@ -277,7 +277,7 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
         item {
             SettingsGroup("Accent color") {
                 ColorSwatches(a.accent, allowAuto = true) { c -> set { it.copy(accent = c) } }
-                Hint("Auto follows your wallpaper (Material You). The accent also themes this app.")
+                Hint("Your accent color is used everywhere: clock highlights, toggles, buttons, the calendar, the photo Duotone effect, and this app. Auto follows your wallpaper (Material You). Profiles can override it.")
             }
         }
         item {
@@ -291,7 +291,7 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
 @Composable
 private fun PhotoEditor(a: Appearance, set: ((Appearance) -> Appearance) -> Unit, preview: ((Appearance) -> Appearance) -> Unit) {
     val p = a.photo
-    val accent = a.accent?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
+    val accent = resolveAccent(a.accent)
     fun setP(f: (PhotoConfig) -> PhotoConfig) = set { it.copy(photo = f(it.photo)) }
     fun liveP(f: (PhotoConfig) -> PhotoConfig) = preview { it.copy(photo = f(it.photo)) }
     val thumb by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, a.imagePath) {
@@ -415,6 +415,16 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                 }
             }
         }
+        item {
+            val op = settings.appearance.chipOpacity
+            SettingsGroup("Glance chips") {
+                SliderRow(
+                    "Background opacity", op, 0f..0.6f, label = { "${(it * 100).roundToInt()}%" },
+                    onLive = { v -> live = settings.copy(appearance = settings.appearance.copy(chipOpacity = v)) },
+                ) { v -> update { it.copy(appearance = it.appearance.copy(chipOpacity = v)) } }
+                Hint("Applies to the alarm, battery, weather and stats chips, and the calendar's Chips design.")
+            }
+        }
         if (settings.isWidgetOn(WidgetType.MEDIA)) {
             item {
                 val m = settings.media
@@ -445,6 +455,7 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                         setC { it.copy(lookaheadHours = h) }
                     }
                     SwitchRow("Include all-day events", checked = c.showAllDay) { v -> setC { it.copy(showAllDay = v) } }
+                    SwitchRow("Use event colors", "Off: everything uses your accent color", c.useEventColors) { v -> setC { it.copy(useEventColors = v) } }
                     if (!CalendarRepo.hasPermission(ctx)) Hint("Grant calendar access in Permissions to see your events. The preview uses sample events.")
                 }
             }
@@ -753,7 +764,7 @@ fun ProfilesScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () ->
                     headlineContent = { Text(p.name, style = MaterialTheme.typography.titleLarge) },
                     supportingContent = { Text(describe(p)) },
                     leadingContent = {
-                        Box(Modifier.size(44.dp).clip(PolygonShape(BrigShapes.badges[idx % BrigShapes.badges.size])).background(p.accent?.let { Color(it) } ?: MaterialTheme.colorScheme.primary))
+                        Box(Modifier.size(44.dp).clip(PolygonShape(BrigShapes.badges[idx % BrigShapes.badges.size])).background(resolveAccent(p.accent ?: settings.appearance.accent)))
                     },
                     trailingContent = { Switch(checked = p.enabled, onCheckedChange = { on -> save(p.copy(enabled = on)) }) },
                     colors = itemColors,

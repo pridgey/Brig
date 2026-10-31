@@ -440,7 +440,7 @@ fun LockPreview(settings: BrigSettings, modifier: Modifier = Modifier, onClick: 
 fun ClockThumbnail(style: ClockStyle, settings: BrigSettings, selected: Boolean, onClick: () -> Unit) {
     val now by rememberNow(false)
     val a = settings.appearance
-    val accent = a.accent?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
+    val accent = resolveAccent(a.accent)
     val source = remember { MutableInteractionSource() }
     val shape = RoundedCornerShape(26.dp)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {

@@ -11,6 +11,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -50,6 +51,20 @@ val BrigShapesTheme = Shapes(
     extraLarge = RoundedCornerShape(36.dp),
 )
 
+/** Brig's fallback accent when Material You isn't available. */
+val DefaultAccent = Color(0xFF9DB7FF)
+
+/**
+ * The one place an accent color is resolved. Null means "Auto": the Material You color from the
+ * wallpaper, always taken from the dark palette so the settings app and lock screen match.
+ */
+@Composable
+fun resolveAccent(accent: Long?): Color {
+    val ctx = LocalContext.current
+    val dynamic = remember(ctx) { if (Build.VERSION.SDK_INT >= 31) dynamicDarkColorScheme(ctx).primary else DefaultAccent }
+    return accent?.let { Color(it) } ?: dynamic
+}
+
 val HeroTitle = TextStyle(fontFamily = BrigFonts.display, fontWeight = FontWeight.Bold, fontSize = 56.sp, letterSpacing = (-2).sp)
 
 @Composable
@@ -58,7 +73,7 @@ fun BrigTheme(accent: Long? = null, dark: Boolean = isSystemInDarkTheme(), conte
     val scheme = when {
         accent != null -> seeded(Color(accent), dark)
         Build.VERSION.SDK_INT >= 31 -> if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
-        else -> seeded(Color(0xFF9DB7FF), dark)
+        else -> seeded(DefaultAccent, dark)
     }
     MaterialTheme(colorScheme = scheme, typography = BrigTypography, shapes = BrigShapesTheme, content = content)
 }

@@ -88,6 +88,8 @@ data class Appearance(
     val clockWeight: ClockWeight? = null,
     val leadingZero: Boolean = false,
     val showAmPm: Boolean = true,
+    /** Background opacity of glance chips (0 = invisible, 1 = solid white). */
+    val chipOpacity: Float = 0.12f,
     val clockAlign: ClockAlign = ClockAlign.AUTO,
     val layout: LayoutConfig = LayoutConfig(),
     val photo: PhotoConfig = PhotoConfig(),
@@ -172,6 +174,8 @@ data class CalendarConfig(
     val count: Int = 3,
     val showAllDay: Boolean = true,
     val lookaheadHours: Int = 36,
+    /** Off: everything uses the accent color. On: each event keeps its calendar's color. */
+    val useEventColors: Boolean = false,
 )
 
 enum class WidgetZone(val label: String) {

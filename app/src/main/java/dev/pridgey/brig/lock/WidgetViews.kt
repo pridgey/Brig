@@ -292,21 +292,23 @@ private fun MediaMinimal(ui: MediaUi, highlight: Color, actions: MediaActions) {
 fun CalendarView(events: List<CalEvent>, cfg: CalendarConfig, accent: Color, nowMs: Long) {
     if (events.isEmpty()) return
     when (cfg.style) {
-        CalendarStyle.LIST -> CalendarList(events, accent)
-        CalendarStyle.TIMELINE -> CalendarTimeline(events, accent, nowMs)
-        CalendarStyle.NEXT_UP -> CalendarNextUp(events, accent, nowMs)
-        CalendarStyle.CHIPS -> CalendarChips(events, accent)
+        CalendarStyle.LIST -> CalendarList(events, accent, cfg.useEventColors)
+        CalendarStyle.TIMELINE -> CalendarTimeline(events, accent, nowMs, cfg.useEventColors)
+        CalendarStyle.NEXT_UP -> CalendarNextUp(events, accent, nowMs, cfg.useEventColors)
+        CalendarStyle.CHIPS -> CalendarChips(events, accent, cfg.useEventColors)
     }
 }
 
-private fun eventColor(e: CalEvent, accent: Color) = if (e.color == 0) accent else Color(e.color)
+/** Accent by default; the event's own calendar color only if the user opted in. */
+private fun eventColor(e: CalEvent, accent: Color, useEventColors: Boolean) =
+    if (useEventColors && e.color != 0) Color(e.color) else accent
 
 @Composable
-private fun CalendarList(events: List<CalEvent>, accent: Color) {
+private fun CalendarList(events: List<CalEvent>, accent: Color, useEventColors: Boolean) {
     GlassCard {
         events.forEach { e ->
             Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(10.dp).clip(CircleShape).background(eventColor(e, accent)))
+                Box(Modifier.size(10.dp).clip(CircleShape).background(eventColor(e, accent, useEventColors)))
                 Spacer(Modifier.width(10.dp))
                 Text(CalendarRepo.whenLabel(e), style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.widthIn(min = 84.dp))
                 Text(e.title, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -316,13 +318,13 @@ private fun CalendarList(events: List<CalEvent>, accent: Color) {
 }
 
 @Composable
-private fun CalendarTimeline(events: List<CalEvent>, accent: Color, nowMs: Long) {
+private fun CalendarTimeline(events: List<CalEvent>, accent: Color, nowMs: Long, useEventColors: Boolean) {
     val pulse = rememberInfiniteTransition(label = "now")
     val a by pulse.animateFloat(0.4f, 1f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "a")
     GlassCard {
         events.forEachIndexed { i, e ->
             val current = !e.allDay && e.begin <= nowMs && nowMs < e.end
-            val color = eventColor(e, accent)
+            val color = eventColor(e, accent, useEventColors)
             Row {
                 Text(
                     CalendarRepo.whenLabel(e),
@@ -350,9 +352,9 @@ private fun CalendarTimeline(events: List<CalEvent>, accent: Color, nowMs: Long)
 }
 
 @Composable
-private fun CalendarNextUp(events: List<CalEvent>, accent: Color, nowMs: Long) {
+private fun CalendarNextUp(events: List<CalEvent>, accent: Color, nowMs: Long, useEventColors: Boolean) {
     val e = events.first()
-    val color = eventColor(e, accent)
+    val color = eventColor(e, accent, useEventColors)
     val current = !e.allDay && e.begin <= nowMs
     GlassCard(color = color.copy(alpha = 0.22f)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -384,14 +386,14 @@ private fun CalendarNextUp(events: List<CalEvent>, accent: Color, nowMs: Long) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CalendarChips(events: List<CalEvent>, accent: Color) {
+private fun CalendarChips(events: List<CalEvent>, accent: Color, useEventColors: Boolean) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         events.forEach { e ->
             Row(
-                Modifier.clip(CircleShape).background(Color.White.copy(alpha = 0.12f)).padding(horizontal = 14.dp, vertical = 8.dp),
+                Modifier.clip(CircleShape).background(Color.White.copy(alpha = LocalChipAlpha.current)).padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(Modifier.size(8.dp).clip(CircleShape).background(eventColor(e, accent)))
+                Box(Modifier.size(8.dp).clip(CircleShape).background(eventColor(e, accent, useEventColors)))
                 Spacer(Modifier.width(8.dp))
                 Text(CalendarRepo.whenLabel(e), style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.7f))
                 Spacer(Modifier.width(6.dp))
