@@ -360,7 +360,7 @@ internal fun loadPhoto(path: String, maxDim: Int): ImageBitmap? = runCatching {
     BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
 }.getOrNull()
 
-/** The playing track's artwork, blurred and slightly zoomed, crossfading as songs change. */
+/** The playing track's artwork, lightly blurred and slightly zoomed, crossfading as songs change. */
 @Composable
 fun AlbumArtBackground(art: ImageBitmap?, modifier: Modifier = Modifier) {
     androidx.compose.animation.Crossfade(art, modifier.fillMaxSize(), animationSpec = tween(900), label = "albumart") { a ->
@@ -368,7 +368,7 @@ fun AlbumArtBackground(art: ImageBitmap?, modifier: Modifier = Modifier) {
             Box(Modifier.fillMaxSize().background(Color.Black)) {
                 Image(
                     a, null,
-                    Modifier.fillMaxSize().graphicsLayer { scaleX = 1.25f; scaleY = 1.25f }.blur(48.dp),
+                    Modifier.fillMaxSize().graphicsLayer { scaleX = 1.1f; scaleY = 1.1f }.blur(16.dp),
                     contentScale = ContentScale.Crop,
                 )
                 Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.25f)))
