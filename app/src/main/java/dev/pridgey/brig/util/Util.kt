@@ -49,6 +49,25 @@ object Http {
             conn.disconnect()
         }
     }
+
+    /** Streams [url] into [dest]. Follows redirects (needed for most image CDNs). */
+    suspend fun download(url: String, dest: java.io.File, headers: Map<String, String> = emptyMap()) = withContext(Dispatchers.IO) {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 10_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "Brig/${BuildConfig.VERSION_NAME}")
+            headers.forEach { (k, v) -> setRequestProperty(k, v) }
+        }
+        try {
+            if (conn.responseCode !in 200..299) throw IOException("HTTP ${conn.responseCode}")
+            val tmp = java.io.File(dest.parentFile, dest.name + ".part")
+            conn.inputStream.use { input -> tmp.outputStream().use { input.copyTo(it) } }
+            if (!tmp.renameTo(dest)) throw IOException("Couldn't save image")
+        } finally {
+            conn.disconnect()
+        }
+    }
 }
 
 /** Small wrappers around system state Brig reads or toggles. */

@@ -11,7 +11,11 @@ import android.content.IntentFilter
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.net.Uri
+import android.provider.AlarmClock
 import android.provider.MediaStore
+import dev.pridgey.brig.data.PhotoRotator
+import kotlinx.coroutines.launch
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -71,6 +75,7 @@ class LockActivity : ComponentActivity() {
 
         NotificationManagerCompat.from(this).cancel(Notifications.LOCK_FSI_ID)
         controller = LockController(this)
+        rotatePhoto()
         onBackPressedDispatcher.addCallback(this) { controller.gateCancelled() }
         ContextCompat.registerReceiver(
             this, userPresent, IntentFilter(Intent.ACTION_USER_PRESENT), ContextCompat.RECEIVER_NOT_EXPORTED,
@@ -92,6 +97,12 @@ class LockActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         controller.reset()
+        rotatePhoto()
+    }
+
+    private fun rotatePhoto() {
+        val ctx = applicationContext
+        BrigApp.instance.appScope.launch { PhotoRotator.maybeRotate(ctx, BrigApp.settings.load().photos) }
     }
 
     override fun onDestroy() {
@@ -221,4 +232,66 @@ class LockController(private val activity: ComponentActivity) {
     }
 
     fun toast(msg: String) = Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
+
+    private fun start(intent: Intent) {
+        try {
+            activity.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: ActivityNotFoundException) {
+            toast("No app can open that")
+        }
+    }
+
+    // ---------------------------------------------------------------- Widgets
+
+    /** Asks the clock app to dismiss the next alarm. Google Clock skips upcoming alarms this way. */
+    fun skipNextAlarm() = requestUnlock {
+        start(
+            Intent(AlarmClock.ACTION_DISMISS_ALARM)
+                .putExtra(AlarmClock.EXTRA_ALARM_SEARCH_MODE, AlarmClock.ALARM_SEARCH_MODE_NEXT),
+        )
+    }
+
+    fun openAlarm(show: PendingIntent?) = requestUnlock {
+        if (show != null) send(show) else start(Intent(AlarmClock.ACTION_SHOW_ALARMS))
+    }
+
+    fun openUri(uri: Uri, type: String? = null) = requestUnlock {
+        val i = Intent(Intent.ACTION_VIEW).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (type != null) i.setDataAndType(uri, type) else i.data = uri
+        start(i)
+    }
+
+    // ---------------------------------------------------------------- Guest mode
+
+    private fun setGuest(on: Boolean) {
+        BrigApp.instance.appScope.launch { BrigApp.settings.update { it.copy(guest = it.guest.copy(active = on)) } }
+    }
+
+    fun enterGuest() {
+        setGuest(true)
+        toast("Guest mode on")
+    }
+
+    /** Leaving guest mode needs the Brig PIN, or the system lock if there's no PIN. */
+    fun exitGuest() {
+        val u = settings.unlock
+        when {
+            u.method == UnlockMethod.PIN && u.pinHash != null && u.pinSalt != null -> gate = { setGuest(false) }
+            km.isKeyguardSecure -> km.requestDismissKeyguard(activity, object : KeyguardManager.KeyguardDismissCallback() {
+                override fun onDismissSucceeded() {
+                    setGuest(false)
+                    finishLock()
+                }
+            })
+            else -> {
+                setGuest(false)
+                toast("Set a Brig PIN or a system lock to protect guest mode")
+            }
+        }
+    }
+
+    /** Opens an allowed app without Brig's own PIN or math gate. A secure system lock still applies. */
+    fun launchGuestApp(pkg: String) = dismissKeyguard {
+        activity.packageManager.getLaunchIntentForPackage(pkg)?.let { start(it) }
+    }
 }

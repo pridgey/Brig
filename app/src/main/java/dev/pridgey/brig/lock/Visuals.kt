@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
@@ -141,7 +142,75 @@ fun LockBackground(appearance: Appearance, accent: Color, modifier: Modifier = M
             BackgroundType.PARTICLES -> Starfield(accent)
             BackgroundType.SOLID -> Box(Modifier.fillMaxSize().background(Color(appearance.solidColor)))
             BackgroundType.IMAGE -> PhotoBackground(appearance.imagePath, appearance.blur, appearance.photo, accent)
+            BackgroundType.VIDEO -> VideoBackground(appearance.videoPath)
         }
+    }
+}
+
+/**
+ * Ken Burns phase (0..1..0 over 64s) from the wall clock, so separate layers (the photo and the
+ * depth cutout) move in lockstep.
+ */
+@Composable
+private fun rememberKenBurns(enabled: Boolean): Float {
+    if (!enabled) return 0f
+    val v by produceState(0f) {
+        while (true) withFrameNanos {
+            val t = (System.currentTimeMillis() % 64_000L) / 32_000f
+            value = if (t <= 1f) t else 2f - t
+        }
+    }
+    return v
+}
+
+/** The photo's zoom, pan and Ken Burns drift. Shared by the photo and its cutout so they line up. */
+private fun Modifier.photoTransform(cfg: PhotoConfig, kb: Float) = graphicsLayer {
+    val sc = cfg.zoom * (1f + 0.14f * kb)
+    scaleX = sc
+    scaleY = sc
+    val maxX = (sc - 1f) * size.width / 2f
+    val maxY = (sc - 1f) * size.height / 2f
+    translationX = (-cfg.panX * maxX + (kb - 0.5f) * 0.08f * size.width * (if (cfg.kenBurns) 1f else 0f)).coerceIn(-maxX, maxX)
+    translationY = (-cfg.panY * maxY).coerceIn(-maxY, maxY)
+}
+
+/**
+ * The photo's subject, cut out and drawn over the clock. Dim and the readability fade are painted
+ * onto the cutout only, so it matches the background underneath.
+ */
+@Composable
+fun DepthForeground(appearance: Appearance, cutoutPath: String, accent: Color, dim: Float, modifier: Modifier = Modifier) {
+    val cfg = appearance.photo
+    val bmp by produceState<ImageBitmap?>(null, cutoutPath) {
+        value = withContext(Dispatchers.IO) { loadPhoto(cutoutPath, 1440) }
+    }
+    val matrix = remember(cfg.effect, cfg.brightness, cfg.contrast, cfg.saturation, accent) { ColorMatrix(PhotoFx.matrix(cfg, accent)) }
+    val kb = rememberKenBurns(cfg.kenBurns)
+    val img = bmp ?: return
+    Box(modifier.fillMaxSize().clipToBounds()) {
+        Image(
+            img, null,
+            Modifier
+                .fillMaxSize()
+                .photoTransform(cfg, kb)
+                .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+                .drawWithContent {
+                    drawContent()
+                    val atop = BlendMode.SrcAtop
+                    if (cfg.scrim > 0f) {
+                        drawRect(
+                            Brush.verticalGradient(
+                                0f to Color.Black.copy(alpha = 0.65f * cfg.scrim), 0.35f to Color.Transparent,
+                                0.6f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.8f * cfg.scrim),
+                            ),
+                            blendMode = atop,
+                        )
+                    }
+                    if (dim > 0f) drawRect(Color.Black.copy(alpha = dim), blendMode = atop)
+                },
+            contentScale = ContentScale.Crop,
+            colorFilter = ColorFilter.colorMatrix(matrix),
+        )
     }
 }
 
@@ -225,25 +294,14 @@ private fun PhotoBackground(path: String?, blur: Float, cfg: PhotoConfig, accent
         ColorMatrix(PhotoFx.matrix(cfg, accent))
     }
     // Ken Burns: a very slow zoom and drift.
-    val kb = if (cfg.kenBurns) {
-        val t = rememberInfiniteTransition(label = "kenburns")
-        t.animateFloat(0f, 1f, infiniteRepeatable(tween(32_000, easing = LinearEasing), RepeatMode.Reverse), label = "kb").value
-    } else 0f
+    val kb = rememberKenBurns(cfg.kenBurns)
     Box(Modifier.fillMaxSize().clipToBounds()) {
         bmp?.let {
             Image(
                 it, null,
                 Modifier
                     .fillMaxSize()
-                    .graphicsLayer {
-                        val sc = cfg.zoom * (1f + 0.14f * kb)
-                        scaleX = sc
-                        scaleY = sc
-                        val maxX = (sc - 1f) * size.width / 2f
-                        val maxY = (sc - 1f) * size.height / 2f
-                        translationX = (-cfg.panX * maxX + (kb - 0.5f) * 0.08f * size.width).coerceIn(-maxX, maxX)
-                        translationY = (-cfg.panY * maxY).coerceIn(-maxY, maxY)
-                    }
+                    .photoTransform(cfg, kb)
                     .then(if (blur > 0f) Modifier.blur((blur * 30).dp) else Modifier),
                 contentScale = ContentScale.Crop,
                 colorFilter = ColorFilter.colorMatrix(matrix),

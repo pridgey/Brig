@@ -62,6 +62,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Password
@@ -159,7 +161,7 @@ private fun copyBackground(ctx: Context, uri: Uri): String? {
 }
 
 @Composable
-fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> Unit) {
+fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> Unit, onOpenBuilder: () -> Unit = {}) {
     val a = settings.appearance
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -174,7 +176,20 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) scope.launch {
             val path = withContext(Dispatchers.IO) { copyBackground(ctx, uri) }
-            if (path != null) set { it.copy(imagePath = path, background = BackgroundType.IMAGE) }
+            if (path != null) {
+                set { it.copy(imagePath = path, background = BackgroundType.IMAGE) }
+                // A new photo means the cutout needs redoing.
+                if (a.depth) launch { dev.pridgey.brig.util.Segmenter.cutout(ctx, path) }
+            }
+        }
+    }
+    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            val path = withContext(Dispatchers.IO) {
+                File(ctx.filesDir, "video").listFiles()?.forEach { it.delete() }
+                copyInto(ctx, uri, "video", "loop_${System.currentTimeMillis()}.mp4")
+            }
+            if (path != null) set { it.copy(videoPath = path, background = BackgroundType.VIDEO) } else toast(ctx, "Couldn't copy that video")
         }
     }
 
@@ -201,6 +216,9 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
                     items(ClockStyle.entries) { style ->
                         ClockThumbnail(style, settings, selected = style == a.clockStyle) { set { it.copy(clockStyle = style) } }
                     }
+                }
+                if (a.clockStyle == ClockStyle.CUSTOM) {
+                    ClickRow("Edit custom clock", "Layers, fonts, shapes, and sharing", Icons.Filled.Edit) { onOpenBuilder() }
                 }
             }
         }
@@ -238,8 +256,10 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
         item {
             SettingsGroup("Background") {
                 ChipChoice(BackgroundType.entries, a.background, { it.label }) { b ->
-                    if (b == BackgroundType.IMAGE && a.imagePath == null) {
+                    if (b == BackgroundType.IMAGE && a.imagePath == null && settings.photos.source == dev.pridgey.brig.data.PhotoSource.SINGLE) {
                         picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    } else if (b == BackgroundType.VIDEO && a.videoPath == null) {
+                        videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
                     } else set { it.copy(background = b) }
                 }
                 when (a.background) {
@@ -252,6 +272,12 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
                     BackgroundType.AURORA -> Hint("Slow-moving light that follows your accent color.")
                     BackgroundType.TIME_OF_DAY -> Hint("The sky changes from dawn to dusk through the day.")
                     BackgroundType.PARTICLES -> Hint("Drifting, twinkling stars tinted with your accent.")
+                    BackgroundType.VIDEO -> {
+                        ClickRow("Choose video", "A short clip that loops silently. Cinemagraphs look great.", Icons.Filled.Movie) {
+                            videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+                        }
+                        Hint("Video backgrounds use more battery than photos.")
+                    }
                 }
                 SliderRow(
                     "Dim", a.dim, 0f..0.8f, label = { "${(it * 100).roundToInt()}%" },
@@ -259,9 +285,13 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
                 ) { v -> set { it.copy(dim = v) } }
             }
         }
+        if (a.background == BackgroundType.IMAGE) {
+            item { PhotoSourceSettings(settings, update) }
+        }
         if (a.background == BackgroundType.IMAGE && a.imagePath != null) {
             item { PhotoEditor(a, set = ::set, preview = ::preview) }
         }
+        item { LiveEffectsSettings(a, ::set) }
         item {
             val l = a.layout
             fun setL(f: (LayoutConfig) -> LayoutConfig) = set { it.copy(layout = f(it.layout)) }
@@ -376,7 +406,9 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                         ListItem(
                             headlineContent = { Text(w.type.label, style = MaterialTheme.typography.titleMedium) },
                             supportingContent = when (w.type) {
-                                WidgetType.ALARM, WidgetType.BATTERY, WidgetType.WEATHER, WidgetType.STATS -> { { Text("Glance chip") } }
+                                WidgetType.ALARM, WidgetType.BATTERY, WidgetType.WEATHER, WidgetType.STATS,
+                                WidgetType.AIR, WidgetType.UV, WidgetType.POLLEN -> { { Text("Glance chip") } }
+                                WidgetType.LIVE -> { { Text("Timers, downloads, rides, navigation") } }
                                 else -> null
                             },
                             leadingContent = {
@@ -422,7 +454,7 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                     "Background opacity", op, 0f..0.6f, label = { "${(it * 100).roundToInt()}%" },
                     onLive = { v -> live = settings.copy(appearance = settings.appearance.copy(chipOpacity = v)) },
                 ) { v -> update { it.copy(appearance = it.appearance.copy(chipOpacity = v)) } }
-                Hint("Applies to the alarm, battery, weather and stats chips, and the calendar's Chips design.")
+                Hint("Applies to the glance chips (alarm, battery, weather, stats, air quality, UV, pollen) and the calendar's Chips design.")
             }
         }
         if (settings.isWidgetOn(WidgetType.MEDIA)) {
@@ -460,9 +492,16 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                 }
             }
         }
-        if (settings.isWidgetOn(WidgetType.WEATHER)) {
+        val needsWeather = listOf(WidgetType.WEATHER, WidgetType.HOURLY, WidgetType.AIR, WidgetType.UV, WidgetType.POLLEN).any(settings::isWidgetOn) ||
+            settings.appearance.weatherFx ||
+            settings.profiles.any { it.enabled && (it.trigger == TriggerType.DAYTIME || it.trigger == TriggerType.NIGHTTIME) }
+        if (needsWeather) {
             item { WeatherSettings(settings.weather) { cfg -> update { it.copy(weather = cfg) } } }
         }
+        if (settings.isWidgetOn(WidgetType.HEALTH)) item { HealthSettings(settings.health, update) }
+        if (settings.isWidgetOn(WidgetType.SPORTS)) item { SportsSettings(settings.sports.teams, update) }
+        if (settings.isWidgetOn(WidgetType.PACKAGES)) item { PackagesSettings(settings.packages, update) }
+        if (settings.isWidgetOn(WidgetType.MEMORIES)) item { MemoriesSettings() }
     }
 }
 
@@ -501,8 +540,9 @@ private fun WeatherSettings(cfg: WeatherConfig, onChange: (WeatherConfig) -> Uni
                 colors = itemColors,
             )
         }
-        if (cfg.lat != null) Hint("Using ${cfg.city}. Data from Open-Meteo, refreshed every 30 minutes.")
+        if (cfg.lat != null) Hint("Using ${cfg.city}. Data from Open-Meteo, refreshed every 30 minutes. The city's location also sets sunrise and sunset for profiles.")
         SwitchRow("Fahrenheit", checked = cfg.fahrenheit) { onChange(cfg.copy(fahrenheit = it)) }
+        SwitchRow("Rain alerts", "\"Rain in 15 min\" on the hourly weather card", cfg.rainAlert) { onChange(cfg.copy(rainAlert = it)) }
     }
 }
 
@@ -526,11 +566,15 @@ fun NotificationsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: 
                 SwitchRow("Show silent notifications", checked = r.showSilent) { v -> set { it.copy(showSilent = v) } }
                 SwitchRow("Quick replies", "Reply to messages without unlocking", r.allowReply) { v -> set { it.copy(allowReply = v) } }
                 SwitchRow("Group by app", "Stack notifications from the same app into one card", r.groupByApp) { v -> set { it.copy(groupByApp = v) } }
+                SwitchRow("Smart priority", "People and conversations first. Promos and low-priority ones fold into a Quiet stack.", r.smartPriority) { v -> set { it.copy(smartPriority = v) } }
+                SwitchRow("Conversation view", "Message notifications open as chat bubbles with a reply box", r.conversationView) { v -> set { it.copy(conversationView = v) } }
+                SwitchRow("Glance mode", "Only app icons until you tap. Folds back after 20 seconds.", r.glanceMode) { v -> set { it.copy(glanceMode = v) } }
                 SliderRow(if (r.groupByApp) "Max cards shown" else "Max shown", r.maxShown.toFloat(), 1f..8f, steps = 6, label = { it.roundToInt().toString() }) { v ->
                     set { it.copy(maxShown = v.roundToInt()) }
                 }
             }
         }
+        item { Hint("Per-app rules: Always on top puts an app with the people. Quiet sends it to the Quiet stack.") }
         item {
             Column {
                 Text(
@@ -636,6 +680,7 @@ fun UnlockScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> U
                 }
             }
         }
+        item { GuestSettings(settings, update) }
     }
 
     pickAppFor?.let { dir ->
@@ -728,10 +773,18 @@ fun ShortcutsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -
 
 // ---------------------------------------------------------------- Profiles
 
+private fun sunShift(m: Int) = when {
+    m == 0 -> ""
+    m > 0 -> " (+$m min)"
+    else -> " ($m min)"
+}
+
 private fun describe(p: Profile): String {
     val trigger = when (p.trigger) {
         TriggerType.TIME -> "${ProfileEngine.formatMinute(p.startMinute)} – ${ProfileEngine.formatMinute(p.endMinute)}"
         TriggerType.CHARGING_AND_TIME -> "Charging, ${ProfileEngine.formatMinute(p.startMinute)} – ${ProfileEngine.formatMinute(p.endMinute)}"
+        TriggerType.DAYTIME -> "Sunrise to sunset" + sunShift(p.sunOffset)
+        TriggerType.NIGHTTIME -> "Sunset to sunrise" + sunShift(p.sunOffset)
         else -> p.trigger.label
     }
     val effects = listOfNotNull(
@@ -741,6 +794,8 @@ private fun describe(p: Profile): String {
         p.clockStyle?.let { "${it.label.lowercase()} clock" },
         "accent".takeIf { p.accent != null },
         "dim".takeIf { p.dim != null },
+        p.background?.let { "${it.label.lowercase()} background" },
+        "own photo".takeIf { p.imagePath != null },
     )
     return trigger + if (effects.isNotEmpty()) " → " + effects.joinToString(", ") else ""
 }
@@ -797,6 +852,14 @@ fun ProfilesScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () ->
 @Composable
 private fun ProfileEditor(initial: Profile, onDismiss: () -> Unit, onSave: (Profile) -> Unit, onDelete: () -> Unit) {
     var p by remember { mutableStateOf(initial) }
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            val path = withContext(Dispatchers.IO) { copyInto(ctx, uri, "profiles", "${p.id}_${System.currentTimeMillis()}.img") }
+            if (path != null) p = p.copy(imagePath = path)
+        }
+    }
     var pickTime by remember { mutableStateOf<Boolean?>(null) } // true = start, false = end
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -812,6 +875,16 @@ private fun ProfileEditor(initial: Profile, onDismiss: () -> Unit, onSave: (Prof
                         OutlinedButton(onClick = { pickTime = false }) { Text("To ${ProfileEngine.formatMinute(p.endMinute)}") }
                     }
                 }
+                if (p.trigger == TriggerType.DAYTIME || p.trigger == TriggerType.NIGHTTIME) {
+                    SliderRow("Shift", p.sunOffset.toFloat(), -120f..120f, steps = 15, label = { sunShift(it.roundToInt()).trim().ifEmpty { "None" } }) {
+                        p = p.copy(sunOffset = it.roundToInt())
+                    }
+                    Text(
+                        "Uses the weather city (Widgets → Weather) to work out sunrise and sunset.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 Text("Effects", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(start = 16.dp))
                 SwitchRow("Bedside mode", "Dim red clock, nothing else", p.bedside) { p = p.copy(bedside = it) }
@@ -822,6 +895,16 @@ private fun ProfileEditor(initial: Profile, onDismiss: () -> Unit, onSave: (Prof
                 ColorSwatches(p.accent, allowAuto = true) { p = p.copy(accent = it) }
                 SwitchRow("Override dim", checked = p.dim != null) { on -> p = p.copy(dim = if (on) 0.5f else null) }
                 p.dim?.let { d -> SliderRow("Dim", d, 0f..0.9f, label = { "${(it * 100).roundToInt()}%" }) { p = p.copy(dim = it) } }
+                DropdownRow(
+                    "Background", listOf<BackgroundType?>(null) + BackgroundType.entries.filter { it != BackgroundType.VIDEO }, p.background,
+                    { it?.label ?: "Don't change" },
+                ) { p = p.copy(background = it) }
+                ClickRow(
+                    if (p.imagePath == null) "Use a different photo" else "Change profile photo",
+                    if (p.imagePath == null) "e.g. a night photo after sunset" else "This profile shows its own photo",
+                    Icons.Filled.Image,
+                ) { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+                if (p.imagePath != null) ClickRow("Remove profile photo", icon = Icons.Filled.Close) { p = p.copy(imagePath = null) }
                 TextButton(onClick = onDelete) {
                     Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.width(6.dp))

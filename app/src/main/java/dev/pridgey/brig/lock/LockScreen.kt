@@ -154,6 +154,11 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 import android.media.AudioManager
+import androidx.compose.material.icons.filled.Person
+import dev.pridgey.brig.data.BackgroundType
+import dev.pridgey.brig.data.PhotoRotator
+import dev.pridgey.brig.data.PhotoSource
+import dev.pridgey.brig.data.Sun
 
 /** Background opacity for glance chips, from Appearance. */
 val LocalChipAlpha = compositionLocalOf { 0.12f }
@@ -165,20 +170,60 @@ fun LockScreen(settings: BrigSettings, controller: LockController) {
     }
 }
 
+/** Widgets hidden while guest mode is on. */
+private val personalWidgets = setOf(
+    WidgetType.NOTIFICATIONS, WidgetType.MEDIA, WidgetType.CALENDAR, WidgetType.STATS, WidgetType.HEALTH,
+    WidgetType.PACKAGES, WidgetType.MEMORIES, WidgetType.LIVE, WidgetType.ALARM_CARD, WidgetType.TOGGLES,
+)
+
+/** What the lock screen shows in guest mode: no personal widgets, and only the guest apps. */
+private fun BrigSettings.forGuest(): BrigSettings = if (!guest.active) this else copy(
+    widgets = widgetOrder().map { if (it.type in personalWidgets) it.copy(enabled = false) else it }
+        .map { if (it.type == WidgetType.SHORTCUTS) it.copy(enabled = true) else it },
+    shortcuts = guest.apps,
+)
+
+/** Which parts of the layout to draw; the depth effect draws the clock and the widgets as separate layers. */
+private enum class ContentPart { ALL, CLOCK_ONLY, NO_CLOCK }
+
 @Composable
-private fun LockScreenContent(settings: BrigSettings, controller: LockController) {
+private fun LockScreenContent(rawSettings: BrigSettings, controller: LockController) {
     val context = LocalContext.current
-    val appearance = settings.appearance
-    val now by rememberNow(appearance.showSeconds)
+    val settings = rawSettings.forGuest()
+    val base = settings.appearance
+    val now by rememberNow(base.showSeconds)
     val battery by rememberBattery()
     val minuteOfDay = now.hour * 60 + now.minute
     val headphones = remember(minuteOfDay) { Device.headphonesConnected(context) }
-    val effects = remember(settings.profiles, minuteOfDay, battery.charging, headphones) {
-        ProfileEngine.resolve(settings.profiles, minuteOfDay, battery.charging, headphones)
+    val sun = remember(settings.weather.lat, settings.weather.lon, now.toLocalDate()) {
+        val lat = settings.weather.lat
+        val lon = settings.weather.lon
+        if (lat != null && lon != null) Sun.times(now.toLocalDate(), lat, lon) else null
     }
+    val effects = remember(settings.profiles, minuteOfDay, battery.charging, headphones, sun) {
+        ProfileEngine.resolve(settings.profiles, minuteOfDay, battery.charging, headphones, sun)
+    }
+    // The photo: a profile's photo wins, then the rotating source, then the one picked in settings.
+    val rotated by PhotoRotator.current.collectAsState()
+    val rotating = settings.photos.source != PhotoSource.SINGLE
+    val photoPath = effects.imagePath ?: (if (rotating) rotated?.path else null) ?: base.imagePath
+    val appearance = base.copy(
+        background = effects.background ?: if (effects.imagePath != null) BackgroundType.IMAGE else base.background,
+        imagePath = photoPath,
+    )
     val accent = resolveAccent(effects.accent ?: appearance.accent)
     val clockStyle = effects.clockStyle ?: appearance.clockStyle
-    val dim = effects.dim ?: appearance.dim
+    val lux by rememberLux(appearance.ambient && !effects.bedside)
+    val tuning = Ambient.tune(effects.dim ?: appearance.dim, lux)
+    val dim = tuning.dim
+    val tilt by rememberTilt(appearance.tiltParallax && !effects.bedside)
+
+    val depthOn = appearance.depth && appearance.background == BackgroundType.IMAGE && photoPath != null && !effects.bedside
+    val cutout by produceState<String?>(null, photoPath, depthOn) {
+        value = if (depthOn && photoPath != null) {
+            dev.pridgey.brig.util.Segmenter.cached(context, photoPath) ?: dev.pridgey.brig.util.Segmenter.cutout(context, photoPath)
+        } else null
+    }
 
     val density = LocalDensity.current
     val threshold = with(density) { 110.dp.toPx() }
@@ -192,6 +237,11 @@ private fun LockScreenContent(settings: BrigSettings, controller: LockController
         val g = latest.gestures
         var action = g.action(dir)
         if (dir == GestureDir.UP && !g.hasUnlock()) action = GestureAction.UNLOCK
+        if (latest.guest.active && action !in setOf(GestureAction.CAMERA, GestureAction.FLASHLIGHT, GestureAction.SLEEP, GestureAction.NONE)) {
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            controller.toast("Guest mode is on. Tap Exit to leave it.")
+            return
+        }
         if (action != GestureAction.NONE) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
         controller.perform(action, g.apps[dir.name])
     }
@@ -233,37 +283,47 @@ private fun LockScreenContent(settings: BrigSettings, controller: LockController
             }
             .pointerInput(Unit) { detectTapGestures(onDoubleTap = { fire(GestureDir.DOUBLE_TAP) }) },
     ) {
-        if (!effects.bedside) {
-            LockBackground(
-                appearance, accent,
-                Modifier.graphicsLayer {
-                    // Background parallax while dragging.
-                    translationX = dragX.value * 0.08f
-                    translationY = dragY.value * 0.08f
-                    val s = 1.06f - (abs(dragY.value) / (threshold * 20)).coerceAtMost(0.04f)
-                    scaleX = s
-                    scaleY = s
-                },
-            )
+        // Background parallax while dragging, plus a gentle shift as the phone tilts.
+        val backgroundModifier = Modifier.graphicsLayer {
+            translationX = dragX.value * 0.08f + tilt.x * 22.dp.toPx()
+            translationY = dragY.value * 0.08f + tilt.y * 22.dp.toPx()
+            val s = 1.06f - (abs(dragY.value) / (threshold * 20)).coerceAtMost(0.04f)
+            scaleX = s
+            scaleY = s
         }
+        if (!effects.bedside) LockBackground(appearance, accent, backgroundModifier)
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = if (effects.bedside) 1f else dim)))
+        if (tuning.warmth > 0f && !effects.bedside) Box(Modifier.fillMaxSize().background(Color(0xFFFF8A3D).copy(alpha = tuning.warmth)))
 
         val contentModifier = Modifier
             .fillMaxSize()
             .graphicsLayer {
                 val progress = (abs(dragY.value) / (threshold * 2.5f)).coerceIn(0f, 1f)
-                translationY = dragY.value * 0.4f + (1f - entrance.value) * 120f
-                translationX = dragX.value * 0.25f
+                translationY = dragY.value * 0.4f + (1f - entrance.value) * 120f - tilt.y * 6.dp.toPx()
+                translationX = dragX.value * 0.25f - tilt.x * 6.dp.toPx()
                 val s = 1f - progress * 0.08f
                 scaleX = s
                 scaleY = s
                 alpha = (entrance.value * (1f - progress * 0.6f)).coerceIn(0f, 1f)
             }
 
-        if (effects.bedside) {
-            BedsideContent(now, appearance.use24h, battery, accent, settings.gestures, controller, contentModifier)
-        } else {
-            MainContent(settings, effects, now, battery, accent, clockStyle, controller, contentModifier)
+        CompositionLocalProvider(LocalChipAlpha provides (LocalChipAlpha.current + tuning.chipBoost).coerceAtMost(0.8f)) {
+            if (effects.bedside) {
+                BedsideContent(now, appearance.use24h, battery, accent, settings.gestures, controller, contentModifier)
+            } else {
+                val shown = settings.copy(appearance = appearance)
+                val cut = cutout
+                if (cut != null) {
+                    // Depth: clock, then the photo's subject over it, then everything else on top.
+                    MainContent(shown, effects, now, battery, accent, clockStyle, controller, contentModifier, ContentPart.CLOCK_ONLY)
+                    DepthForeground(appearance, cut, accent, dim, backgroundModifier)
+                    if (appearance.weatherFx) LiveWeatherParticles(settings.weather)
+                    MainContent(shown, effects, now, battery, accent, clockStyle, controller, contentModifier, ContentPart.NO_CLOCK)
+                } else {
+                    if (appearance.weatherFx) LiveWeatherParticles(settings.weather)
+                    MainContent(shown, effects, now, battery, accent, clockStyle, controller, contentModifier)
+                }
+            }
         }
 
         controller.gate?.let {
@@ -277,7 +337,10 @@ private sealed interface WidgetGroup {
     data class Single(val type: WidgetType) : WidgetGroup
 }
 
-private val chipTypes = setOf(WidgetType.ALARM, WidgetType.BATTERY, WidgetType.WEATHER, WidgetType.STATS)
+private val chipTypes = setOf(
+    WidgetType.ALARM, WidgetType.BATTERY, WidgetType.WEATHER, WidgetType.STATS,
+    WidgetType.AIR, WidgetType.UV, WidgetType.POLLEN,
+)
 
 private fun groupWidgets(types: List<WidgetType>): List<WidgetGroup> {
     val out = mutableListOf<WidgetGroup>()
@@ -305,6 +368,8 @@ private fun ZonedLayout(
     modifier: Modifier,
     extraTop: Dp = 0.dp,
     extraBottom: Dp = 0.dp,
+    showHeader: Boolean = true,
+    showWidgets: Boolean = true,
     header: @Composable ColumnScope.() -> Unit,
     chip: @Composable (WidgetType) -> Unit,
     single: @Composable ColumnScope.(type: WidgetType, inBottom: Boolean) -> Unit,
@@ -313,7 +378,7 @@ private fun ZonedLayout(
     val density = LocalDensity.current
     val layout = settings.appearance.layout
     var bottomHeight by remember { mutableIntStateOf(0) }
-    val enabled = settings.widgetOrder().filter { it.enabled }
+    val enabled = if (showWidgets) settings.widgetOrder().filter { it.enabled } else emptyList()
     val topTypes = enabled.filter { it.zoneOrDefault() == WidgetZone.TOP }.map { it.type }
     val bottomTypes = enabled.filter { it.zoneOrDefault() == WidgetZone.BOTTOM }.map { it.type }
 
@@ -338,7 +403,12 @@ private fun ZonedLayout(
                 .padding(top = extraTop + layout.top.dp, bottom = with(density) { bottomHeight.toDp() } + 8.dp),
             verticalArrangement = Arrangement.spacedBy(layout.spacing.dp),
         ) {
-            header()
+            // The header keeps its space when hidden so the widgets below don't move.
+            Column(
+                Modifier.fillMaxWidth().graphicsLayer { alpha = if (showHeader) 1f else 0f },
+                verticalArrangement = Arrangement.spacedBy(layout.spacing.dp),
+                content = header,
+            )
             groups(topTypes, align, inBottom = false)
         }
         Column(
@@ -351,7 +421,7 @@ private fun ZonedLayout(
             verticalArrangement = Arrangement.spacedBy(maxOf(layout.spacing, 12).dp),
         ) {
             groups(bottomTypes, Alignment.CenterHorizontally, inBottom = true)
-            hint()
+            if (showWidgets) hint()
         }
     }
 }
@@ -366,14 +436,23 @@ private fun MainContent(
     clockStyle: ClockStyle,
     controller: LockController,
     modifier: Modifier,
+    part: ContentPart = ContentPart.ALL,
 ) {
     val appearance = settings.appearance
     val align = appearance.clockAlignment(clockStyle)
+    val rotated by PhotoRotator.current.collectAsState()
     ZonedLayout(
         settings, align, modifier.systemBarsPadding(),
+        showHeader = part != ContentPart.NO_CLOCK,
+        showWidgets = part != ContentPart.CLOCK_ONLY,
         header = {
+            if (settings.guest.active) GuestBanner(controller, Modifier.align(align))
             Clock(clockStyle, now, ClockSpec.from(appearance, accent), Modifier.align(align))
             appearance.secondaryZone?.let { z -> SecondaryZone(z, now, appearance.use24h, Modifier.align(align)) }
+            val caption = rotated?.caption
+            if (caption != null && settings.photos.source != PhotoSource.SINGLE && appearance.background == BackgroundType.IMAGE) {
+                Text(caption, style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.6f), modifier = Modifier.align(align), maxLines = 1)
+            }
             if (effects.activeNames.isNotEmpty()) {
                 Text(
                     effects.activeNames.joinToString(" · "),
@@ -389,6 +468,9 @@ private fun MainContent(
                 WidgetType.BATTERY -> BatteryChip(battery, accent)
                 WidgetType.WEATHER -> WeatherChip(settings.weather)
                 WidgetType.STATS -> StatsChip()
+                WidgetType.AIR -> AirChip(settings.weather)
+                WidgetType.UV -> UvChip(settings.weather)
+                WidgetType.POLLEN -> PollenChip(settings.weather)
                 else -> Unit
             }
         },
@@ -411,13 +493,26 @@ private fun MainContent(
                     }
                 }
                 WidgetType.SHORTCUTS -> if (settings.shortcuts.isNotEmpty()) {
-                    Box(Modifier.align(a)) { ShortcutsRow(settings.shortcuts, controller) }
+                    Box(Modifier.align(a)) { ShortcutsRow(settings.shortcuts, controller, guest = settings.guest.active) }
                 }
-                WidgetType.TOGGLES -> Box(Modifier.align(a)) { TogglesRow(accent, controller) }
+                WidgetType.TOGGLES -> Box(Modifier.align(a)) { TogglesRow(accent, controller, guestToggle = settings.guest.toggle) }
+                WidgetType.LIVE -> if (!effects.hideNotifications) LiveActivitiesWidget(settings, effects, controller)
+                WidgetType.ALARM_CARD -> LiveAlarmCard(accent, controller)
+                WidgetType.HOURLY -> LiveHourly(settings.weather, accent, now)
+                WidgetType.HEALTH -> if (settings.health.style == dev.pridgey.brig.data.HealthStyle.CHIP) {
+                    Box(Modifier.align(a)) { LiveHealth(settings.health, accent, now) }
+                } else LiveHealth(settings.health, accent, now)
+                WidgetType.SPORTS -> LiveSports(settings.sports, now)
+                WidgetType.PACKAGES -> LivePackages(settings.packages, accent, controller)
+                WidgetType.MEMORIES -> LiveMemories(controller)
                 else -> Unit
             }
         },
-        hint = { UnlockHint(settings.gestures, controller.systemLockSecure, accent) },
+        hint = {
+            if (settings.guest.active) {
+                Text("Guest mode", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.7f))
+            } else UnlockHint(settings.gestures, controller.systemLockSecure, accent)
+        },
     )
 }
 
@@ -572,241 +667,10 @@ internal fun QuoteWidget(now: LocalDateTime) {
     }
 }
 
-// ---------------------------------------------------------------- Notifications
-
-@Composable
-private fun NotificationsWidget(settings: BrigSettings, effects: ActiveEffects, controller: LockController) {
-    val all by BrigNotificationListener.notifications.collectAsState()
-    val connected by BrigNotificationListener.connected.collectAsState()
-    val rules = settings.notifications
-    if (!connected) {
-        Text("Grant notification access in Brig to see notifications here", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.5f))
-        return
-    }
-    val visible = all.filter { n ->
-        rules.appModes[n.pkg] != AppNotificationMode.BLOCK && (rules.showSilent || !n.silent)
-    }
-    val groups = groupNotifications(visible, rules.groupByApp)
-    var expanded by remember { mutableStateOf<String?>(null) }
-    var openGroup by remember { mutableStateOf<String?>(null) }
-    fun hidden(pkg: String) = rules.hideAllContent || effects.hideContent || rules.appModes[pkg] == AppNotificationMode.HIDE_CONTENT
-    @Composable
-    fun Card(n: BrigNotification) = NotificationCard(
-        n,
-        hideContent = hidden(n.pkg),
-        allowReply = rules.allowReply,
-        expanded = expanded == n.key,
-        onToggle = { expanded = if (expanded == n.key) null else n.key },
-        controller = controller,
-    )
-    Column(Modifier.animateContentSize(spring(dampingRatio = 0.8f)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        val shown = groups.take(rules.maxShown)
-        shown.forEachIndexed { i, g ->
-            androidx.compose.runtime.key(g.key) {
-                val appear = remember { MutableTransitionState(false).apply { targetState = true } }
-                AnimatedVisibility(
-                    visibleState = appear,
-                    enter = fadeIn(tween(300, delayMillis = i * 60)) + slideInVertically(spring(dampingRatio = 0.7f)) { it / 2 } + scaleIn(initialScale = 0.9f),
-                ) {
-                    when {
-                        g.items.size == 1 -> Card(g.latest)
-                        openGroup == g.key -> ExpandedGroup(g, onCollapse = { openGroup = null }) { Card(it) }
-                        else -> CollapsedGroupCard(g, hidden(g.pkg), onClick = { openGroup = g.key })
-                    }
-                }
-            }
-        }
-        val more = groups.drop(shown.size).sumOf { it.items.size }
-        if (more > 0) {
-            Text(
-                "+$more more",
-                style = MaterialTheme.typography.labelMedium,
-                color = Color.White.copy(alpha = 0.6f),
-                modifier = Modifier.padding(start = 8.dp),
-            )
-        }
-    }
-}
-
-private fun dismissAll(g: NotificationGroup) = g.items.filter { it.clearable }.forEach { BrigNotificationListener.dismiss(it.key) }
-
-@Composable
-private fun CountPill(count: Int) {
-    Box(
-        Modifier.padding(start = 6.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.18f)).padding(horizontal = 7.dp, vertical = 1.dp),
-    ) {
-        Text("$count", style = MaterialTheme.typography.labelSmall, color = Color.White)
-    }
-}
-
-private fun relativeTime(t: Long) =
-    DateUtils.getRelativeTimeSpanString(t, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE).toString()
-
-/** One card standing in for a stack of notifications from the same app. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun CollapsedGroupCard(g: NotificationGroup, hideContent: Boolean, onClick: () -> Unit) {
-    val previews = 3
-    val content: @Composable () -> Unit = {
-        Column {
-            GlassCard(onClick = onClick) {
-                Row(verticalAlignment = Alignment.Top) {
-                    g.latest.appIcon?.let {
-                        Image(it, null, Modifier.size(38.dp).clip(PolygonShape(BrigShapes.cookie12)), contentScale = ContentScale.Crop)
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(g.latest.appLabel, style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.7f), maxLines = 1)
-                            CountPill(g.items.size)
-                            Spacer(Modifier.weight(1f))
-                            Text(relativeTime(g.latest.postTime), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.5f))
-                        }
-                        if (hideContent) {
-                            Text("${g.items.size} notifications", style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.8f))
-                        } else {
-                            g.items.take(previews).forEach { n ->
-                                Text(
-                                    buildAnnotatedString {
-                                        if (n.title.isNotBlank()) {
-                                            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = Color.White)) { append(n.title) }
-                                            if (n.text.isNotBlank()) append("  ")
-                                        }
-                                        append(n.text)
-                                    },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = Color.White.copy(alpha = 0.8f),
-                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            if (g.items.size > previews) {
-                                Text("+${g.items.size - previews} more", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.5f))
-                            }
-                        }
-                    }
-                }
-            }
-            // Peeking edge so it reads as a stack.
-            Box(
-                Modifier.padding(horizontal = 18.dp).fillMaxWidth().height(6.dp)
-                    .clip(RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
-                    .background(Color.White.copy(alpha = 0.07f)),
-            )
-        }
-    }
-    if (g.clearable) {
-        val state = rememberSwipeToDismissBoxState(confirmValueChange = { v ->
-            if (v != SwipeToDismissBoxValue.Settled) {
-                dismissAll(g)
-                true
-            } else false
-        })
-        SwipeToDismissBox(state = state, backgroundContent = {}) { content() }
-    } else {
-        content()
-    }
-}
-
-/** Header plus each notification in the group as its own card. */
-@Composable
-private fun ExpandedGroup(g: NotificationGroup, onCollapse: () -> Unit, card: @Composable (BrigNotification) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = onCollapse).padding(start = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(g.latest.appLabel, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.85f), maxLines = 1)
-            CountPill(g.items.size)
-            Spacer(Modifier.weight(1f))
-            if (g.clearable) TextButton(onClick = { dismissAll(g) }) { Text("Clear all", color = Color.White.copy(alpha = 0.8f)) }
-            TextButton(onClick = onCollapse) { Text("Collapse", color = Color.White.copy(alpha = 0.8f)) }
-        }
-        g.items.forEach { n -> androidx.compose.runtime.key(n.key) { card(n) } }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun NotificationCard(
-    n: BrigNotification,
-    hideContent: Boolean,
-    allowReply: Boolean,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    controller: LockController,
-) {
-    val content: @Composable () -> Unit = {
-        GlassCard(onClick = onToggle) {
-            Row(verticalAlignment = Alignment.Top) {
-                val avatar = if (!hideContent) n.largeIcon ?: n.appIcon else n.appIcon
-                avatar?.let {
-                    Image(it, null, Modifier.size(38.dp).clip(PolygonShape(BrigShapes.cookie12)), contentScale = ContentScale.Crop)
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(n.appLabel, style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.weight(1f), maxLines = 1)
-                        Text(relativeTime(n.postTime), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.5f))
-                    }
-                    if (hideContent) {
-                        Text("Content hidden", style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.8f))
-                    } else {
-                        if (n.title.isNotBlank()) Text(n.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (n.text.isNotBlank()) Text(n.text, style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.85f), maxLines = if (expanded) 6 else 2, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-            }
-            AnimatedVisibility(expanded) { NotificationActions(n, allowReply && !hideContent, controller) }
-        }
-    }
-    if (n.clearable) {
-        val state = rememberSwipeToDismissBoxState(confirmValueChange = { v ->
-            if (v != SwipeToDismissBoxValue.Settled) {
-                BrigNotificationListener.dismiss(n.key)
-                true
-            } else false
-        })
-        SwipeToDismissBox(state = state, backgroundContent = {}) { content() }
-    } else {
-        content()
-    }
-}
-
-@Composable
-private fun NotificationActions(n: BrigNotification, allowReply: Boolean, controller: LockController) {
-    val ctx = LocalContext.current
-    var replying by remember { mutableStateOf(false) }
-    var text by remember { mutableStateOf("") }
-    Column(Modifier.padding(top = 10.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (n.contentIntent != null) FilledTonalButton(onClick = { controller.openNotification(n) }) { Text("Open") }
-            if (allowReply && n.replyAction != null) FilledTonalButton(onClick = { replying = !replying }) { Text("Reply") }
-            if (n.clearable) TextButton(onClick = { BrigNotificationListener.dismiss(n.key) }) { Text("Dismiss", color = Color.White) }
-        }
-        if (replying) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = text, onValueChange = { text = it },
-                    modifier = Modifier.weight(1f), placeholder = { Text("Reply…") }, maxLines = 3,
-                    shape = RoundedCornerShape(20.dp),
-                )
-                IconButton(onClick = {
-                    val action = n.replyAction ?: return@IconButton
-                    if (text.isNotBlank() && BrigNotificationListener.reply(ctx, action, text)) {
-                        text = ""
-                        replying = false
-                        Toast.makeText(ctx, "Sent", Toast.LENGTH_SHORT).show()
-                    }
-                }) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = Color.White) }
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------- Bottom bar
 
 @Composable
-private fun ShortcutsRow(shortcuts: List<String>, controller: LockController) {
+private fun ShortcutsRow(shortcuts: List<String>, controller: LockController, guest: Boolean = false) {
     val ctx = LocalContext.current
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         shortcuts.forEachIndexed { i, pkg ->
@@ -818,7 +682,7 @@ private fun ShortcutsRow(shortcuts: List<String>, controller: LockController) {
                     .pressScale(source, 0.8f)
                     .clip(PolygonShape(BrigShapes.badges[i % BrigShapes.badges.size]))
                     .background(Color.White.copy(alpha = 0.14f))
-                    .clickable(source, null) { controller.launchApp(pkg) },
+                    .clickable(source, null) { if (guest) controller.launchGuestApp(pkg) else controller.launchApp(pkg) },
                 contentAlignment = Alignment.Center,
             ) {
                 icon?.let { Image(it, AppsRepo.label(ctx, pkg), Modifier.size(34.dp)) }
@@ -828,7 +692,7 @@ private fun ShortcutsRow(shortcuts: List<String>, controller: LockController) {
 }
 
 @Composable
-private fun TogglesRow(accent: Color, controller: LockController) {
+private fun TogglesRow(accent: Color, controller: LockController, guestToggle: Boolean = false) {
     val ctx = LocalContext.current
     val torch by Torch.on.collectAsState()
     LaunchedEffect(Unit) { Torch.init(ctx) }
@@ -852,6 +716,20 @@ private fun TogglesRow(accent: Color, controller: LockController) {
             controller.cycleRinger()
             refresh++
         }
+        if (guestToggle) MorphToggle(Icons.Filled.Person, "Guest mode", false, accent) { controller.enterGuest() }
+    }
+}
+
+@Composable
+private fun GuestBanner(controller: LockController, modifier: Modifier) {
+    Row(
+        modifier.clip(CircleShape).background(Color.White.copy(alpha = 0.14f)).padding(start = 14.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Filled.Person, null, Modifier.size(16.dp), tint = Color.White)
+        Spacer(Modifier.width(6.dp))
+        Text("Guest mode", style = MaterialTheme.typography.labelLarge, color = Color.White)
+        TextButton(onClick = { controller.exitGuest() }) { Text("Exit", color = MaterialTheme.colorScheme.primary) }
     }
 }
 
@@ -965,6 +843,15 @@ fun LockMock(settings: BrigSettings) {
     CompositionLocalProvider(LocalChipAlpha provides settings.appearance.chipOpacity) { LockMockContent(settings) }
 }
 
+private fun sampleHours(now: Long) = List(7) { i ->
+    dev.pridgey.brig.data.HourWeather(now + i * 3600_000L, 72 - i, if (i in 2..4) 61 else 2, if (i in 2..4) 70 else 5, true)
+}
+
+private fun sampleGames(now: Long) = listOf(
+    dev.pridgey.brig.data.Game("SEA", "SF", true, "21", "17", dev.pridgey.brig.data.GameState.LIVE, "Q3 5:12", now, 0xFF002244, 0xFFAA0000),
+    dev.pridgey.brig.data.Game("BOS", "NYY", false, "", "", dev.pridgey.brig.data.GameState.PRE, "Tue 7:10 PM", now, 0xFFBD3039, 0xFF0C2340),
+)
+
 @Composable
 private fun LockMockContent(settings: BrigSettings) {
     val ctx = LocalContext.current
@@ -989,6 +876,9 @@ private fun LockMockContent(settings: BrigSettings) {
                     WidgetType.BATTERY -> GlanceChip("82%", icon = Icons.Filled.BatteryStd)
                     WidgetType.WEATHER -> GlanceChip("72°  75°/60°", emoji = "🌤️")
                     WidgetType.STATS -> GlanceChip("12 unlocks · 30 wakes", emoji = "📊")
+                    WidgetType.AIR -> GlanceChip("AQI 38 · Good", emoji = "🌬️")
+                    WidgetType.UV -> GlanceChip("UV 4 · Moderate", emoji = "☀️")
+                    WidgetType.POLLEN -> GlanceChip("Grass pollen · Low", emoji = "🌾")
                     else -> Unit
                 }
             },
@@ -1004,7 +894,30 @@ private fun LockMockContent(settings: BrigSettings) {
                     WidgetType.MEDIA -> MediaView(sampleMedia(), settings.media, accent, MediaActions.None)
                     WidgetType.CALENDAR -> CalendarView(events, settings.calendar, accent, nowMs)
                     WidgetType.QUOTE -> QuoteWidget(now)
-                    WidgetType.NOTIFICATIONS -> GlassCard {
+                    WidgetType.LIVE -> GlassCard {
+                        Text("Timer · Pasta", style = MaterialTheme.typography.titleSmall)
+                        Text("7:42", style = MaterialTheme.typography.headlineSmall)
+                        androidx.compose.material3.LinearProgressIndicator(progress = { 0.6f }, modifier = Modifier.fillMaxWidth().clip(CircleShape), color = accent, trackColor = Color.White.copy(alpha = 0.15f))
+                    }
+                    WidgetType.ALARM_CARD -> AlarmCardView(nowMs + 8 * 3600_000L, accent, {}, {})
+                    WidgetType.HOURLY -> HourlyView(sampleHours(nowMs), if (settings.weather.rainAlert) "Rain in 25 min" else null, accent)
+                    WidgetType.HEALTH -> if (settings.health.style == dev.pridgey.brig.data.HealthStyle.CHIP) {
+                        Box(Modifier.align(al)) { HealthView(dev.pridgey.brig.data.HealthToday(6231, 310, 22), settings.health, accent) }
+                    } else HealthView(dev.pridgey.brig.data.HealthToday(6231, 310, 22), settings.health, accent)
+                    WidgetType.SPORTS -> SportsView(sampleGames(nowMs))
+                    WidgetType.PACKAGES -> PackagesView(
+                        listOf(dev.pridgey.brig.data.TrackedPackage("1Z999", "UPS", "Running shoes", "Out for delivery", nowMs - 40 * 60_000L)),
+                        accent,
+                    ) {}
+                    WidgetType.MEMORIES -> GlassCard {
+                        Text("On this day · 3 years ago", style = MaterialTheme.typography.titleSmall)
+                        Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            repeat(3) { i ->
+                                Box(Modifier.weight(1f).height(96.dp).clip(RoundedCornerShape(16.dp)).background(accent.copy(alpha = 0.25f + i * 0.15f)))
+                            }
+                        }
+                    }
+                    WidgetType.NOTIFICATIONS -> if (settings.notifications.glanceMode) GlanceChip("Messages · Mail · Slack", emoji = "🔔") else GlassCard {
                         Text("Messages · 2m", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.7f))
                         Text(if (settings.notifications.hideAllContent) "Content hidden" else "Sam", style = MaterialTheme.typography.titleSmall)
                         if (!settings.notifications.hideAllContent) {

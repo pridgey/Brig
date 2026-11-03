@@ -90,6 +90,7 @@ data class ClockSpec(
     val weight: FontWeight?,
     /** Show AM/PM next to 12-hour clocks. */
     val amPm: Boolean = !use24h,
+    val custom: dev.pridgey.brig.data.CustomClock? = null,
 ) {
     val hourPattern get() = when {
         use24h -> "HH"
@@ -110,6 +111,7 @@ data class ClockSpec(
             font = a.clockFont.family(),
             weight = a.clockWeight?.weight(),
             amPm = !a.use24h && a.showAmPm,
+            custom = a.customClock,
         )
     }
 }
@@ -199,6 +201,7 @@ fun Clock(style: ClockStyle, now: LocalDateTime, spec: ClockSpec, modifier: Modi
             TextStyle(fontFamily = spec.font, fontSize = (52 * s).sp, fontWeight = spec.w(FontWeight.Normal), color = c, fontFeatureSettings = TNUM),
             modifier,
         )
+        ClockStyle.CUSTOM -> CustomClockView(spec.custom ?: dev.pridgey.brig.data.CustomClock.starter(), now, spec, modifier)
     }
 }
 

@@ -17,6 +17,13 @@ data class BrigSettings(
     val updates: UpdateConfig = UpdateConfig(),
     val media: MediaConfig = MediaConfig(),
     val calendar: CalendarConfig = CalendarConfig(),
+    val health: HealthConfig = HealthConfig(),
+    val sports: SportsConfig = SportsConfig(),
+    val packages: PackagesConfig = PackagesConfig(),
+    val photos: PhotoSourceConfig = PhotoSourceConfig(),
+    val guest: GuestConfig = GuestConfig(),
+    /** 0 until the first-run assistant finishes. */
+    val setupVersion: Int = 0,
 ) {
     /** Saved widget order, plus any widget types added in newer versions. */
     fun widgetOrder(): List<WidgetConfig> {
@@ -41,6 +48,7 @@ enum class ClockStyle(val label: String, val centered: Boolean) {
     ANALOG("Analog", true),
     WORDS("Words", false),
     MINIMAL("Minimal", false),
+    CUSTOM("Custom", false),
 }
 
 enum class ClockFont(val label: String) {
@@ -72,6 +80,7 @@ enum class BackgroundType(val label: String) {
     PARTICLES("Starfield"),
     SOLID("Solid"),
     IMAGE("Photo"),
+    VIDEO("Video loop"),
 }
 
 @Serializable
@@ -100,6 +109,162 @@ data class Appearance(
     val dim: Float = 0.25f,
     val blur: Float = 0f,
     val hideStatusBar: Boolean = false,
+    /** Cut the photo's subject out and draw it over the clock. */
+    val depth: Boolean = false,
+    /** Background shifts slightly as the phone tilts. */
+    val tiltParallax: Boolean = false,
+    /** Rain, snow or fog drawn over the background to match the current weather. */
+    val weatherFx: Boolean = false,
+    /** Dimmer and warmer in the dark, brighter in sunlight. */
+    val ambient: Boolean = false,
+    val videoPath: String? = null,
+    val customClock: CustomClock = CustomClock.starter(),
+)
+
+// ---------------------------------------------------------------- Custom clock
+
+enum class LayerKind(val label: String) {
+    TEXT("Text"),
+    SHAPE("Shape"),
+}
+
+enum class LayerColor(val label: String) {
+    WHITE("White"),
+    ACCENT("Accent"),
+    ACCENT_SOFT("Soft accent"),
+    CUSTOM("Custom"),
+}
+
+enum class LayerShape(val label: String) {
+    CIRCLE("Circle"),
+    COOKIE4("Clover"),
+    COOKIE6("Flower"),
+    COOKIE9("Cookie"),
+    COOKIE12("Sun"),
+    PILL("Pill"),
+    SQUARE("Square"),
+    RING("Ring"),
+}
+
+/**
+ * One layer of a custom clock. Text layers use a java.time pattern like "HH" or "EEEE".
+ * Position is relative to the clock box: x and y are 0..1, size is in sp (text) or dp (shapes).
+ */
+@Serializable
+data class ClockLayer(
+    val kind: LayerKind = LayerKind.TEXT,
+    val pattern: String = "h:mm",
+    val font: ClockFont = ClockFont.DEFAULT,
+    val weight: ClockWeight = ClockWeight.BOLD,
+    val shape: LayerShape = LayerShape.COOKIE9,
+    val x: Float = 0f,
+    val y: Float = 0f,
+    val size: Float = 72f,
+    val color: LayerColor = LayerColor.WHITE,
+    val customColor: Long = 0xFFFFFFFF,
+    val alpha: Float = 1f,
+    val rotation: Float = 0f,
+    /** Shapes only: turn slowly, one revolution per minute. */
+    val spin: Boolean = false,
+)
+
+@Serializable
+data class CustomClock(val name: String = "My clock", val height: Int = 200, val layers: List<ClockLayer> = emptyList()) {
+    companion object {
+        fun starter() = CustomClock(
+            name = "Cookie time",
+            height = 210,
+            layers = listOf(
+                ClockLayer(kind = LayerKind.SHAPE, shape = LayerShape.COOKIE9, x = 0.02f, y = 0.02f, size = 190f, color = LayerColor.ACCENT, alpha = 0.35f, spin = true),
+                ClockLayer(pattern = "HH", x = 0.08f, y = 0.04f, size = 96f, weight = ClockWeight.BLACK),
+                ClockLayer(pattern = "mm", x = 0.08f, y = 0.46f, size = 96f, weight = ClockWeight.BLACK, color = LayerColor.ACCENT),
+                ClockLayer(pattern = "EEE d", x = 0.52f, y = 0.42f, size = 22f, weight = ClockWeight.REGULAR, alpha = 0.8f),
+            ),
+        )
+    }
+}
+
+// ---------------------------------------------------------------- Photo sources
+
+enum class PhotoSource(val label: String, val description: String) {
+    SINGLE("One photo", "The photo you picked"),
+    ALBUM("My picks", "Rotate through photos you choose"),
+    ON_THIS_DAY("On this day", "Your own photos taken on this date in past years"),
+    IMMICH("Immich", "An album from your Immich server"),
+    APOD("NASA picture of the day", "Astronomy Picture of the Day"),
+    BING("Bing daily", "Bing's photo of the day"),
+    UNSPLASH("Unsplash", "Random photos for a search term (needs a free access key)"),
+    REDDIT("Reddit", "Top image posts from a subreddit"),
+}
+
+enum class Rotation(val label: String, val minutes: Int) {
+    EVERY_LOCK("Every time the screen locks", 0),
+    HOURLY("Every hour", 60),
+    SIX_HOURS("Every 6 hours", 360),
+    DAILY("Once a day", 1440),
+}
+
+@Serializable
+data class PhotoSourceConfig(
+    val source: PhotoSource = PhotoSource.SINGLE,
+    val rotation: Rotation = Rotation.DAILY,
+    val albumPaths: List<String> = emptyList(),
+    val immichUrl: String = "",
+    val immichKey: String = "",
+    val immichAlbumId: String = "",
+    val immichAlbumName: String = "",
+    val unsplashKey: String = "",
+    val unsplashQuery: String = "nature",
+    val subreddit: String = "EarthPorn",
+)
+
+// ---------------------------------------------------------------- Feeds
+
+enum class HealthStyle(val label: String) {
+    RINGS("Rings"),
+    BARS("Bars"),
+    CHIP("Chip"),
+}
+
+@Serializable
+data class HealthConfig(
+    val style: HealthStyle = HealthStyle.RINGS,
+    val stepGoal: Int = 8000,
+    val calorieGoal: Int = 500,
+    val minutesGoal: Int = 30,
+)
+
+@Serializable
+data class SportsTeam(val league: String, val id: String, val abbr: String, val name: String, val color: Long? = null)
+
+@Serializable
+data class SportsConfig(val teams: List<SportsTeam> = emptyList())
+
+@Serializable
+data class TrackedPackage(
+    val number: String,
+    val carrier: String,
+    val label: String = "",
+    val status: String = "",
+    val updatedAt: Long = 0,
+    val delivered: Boolean = false,
+    val auto: Boolean = false,
+)
+
+@Serializable
+data class PackagesConfig(
+    val autoDetect: Boolean = true,
+    /** Hide delivered packages after this many hours. */
+    val keepDeliveredHours: Int = 24,
+)
+
+@Serializable
+data class GuestConfig(
+    val active: Boolean = false,
+    /** Apps a guest may open. Empty means the camera only. */
+    val apps: List<String> = emptyList(),
+    /** Show a guest button in the lock screen's quick toggles. */
+    val toggle: Boolean = true,
 )
 
 /** Lock screen spacing, in dp. */
@@ -195,6 +360,16 @@ enum class WidgetType(val label: String, val defaultOn: Boolean, val defaultZone
     QUOTE("Quote of the day", false),
     SHORTCUTS("App shortcuts", true, WidgetZone.BOTTOM),
     TOGGLES("Quick toggles", true, WidgetZone.BOTTOM),
+    LIVE("Live activities", true),
+    ALARM_CARD("Alarm card", false),
+    HOURLY("Hourly weather", false),
+    AIR("Air quality", false),
+    UV("UV index", false),
+    POLLEN("Pollen", false),
+    HEALTH("Steps & activity", false),
+    SPORTS("Sports scores", false),
+    PACKAGES("Packages", false),
+    MEMORIES("On this day", false),
 }
 
 @Serializable
@@ -209,6 +384,8 @@ data class WidgetConfig(
 
 enum class AppNotificationMode(val label: String) {
     SHOW("Show"),
+    PRIORITY("Always on top"),
+    QUIET("Quiet"),
     HIDE_CONTENT("Hide content"),
     BLOCK("Block"),
 }
@@ -220,6 +397,12 @@ data class NotificationRules(
     val maxShown: Int = 4,
     val allowReply: Boolean = true,
     val groupByApp: Boolean = true,
+    /** People first, promos and silent ones collapsed into a Quiet stack. */
+    val smartPriority: Boolean = true,
+    /** Message notifications expand into chat bubbles. */
+    val conversationView: Boolean = true,
+    /** Only app icons until tapped. */
+    val glanceMode: Boolean = false,
     val appModes: Map<String, AppNotificationMode> = emptyMap(),
 )
 
@@ -293,6 +476,8 @@ enum class TriggerType(val label: String, val usesTime: Boolean) {
     CHARGING("While charging", false),
     CHARGING_AND_TIME("Charging during a time window", true),
     HEADPHONES("Headphones connected", false),
+    DAYTIME("Daytime (sunrise to sunset)", false),
+    NIGHTTIME("Night (sunset to sunrise)", false),
 }
 
 @Serializable
@@ -309,6 +494,10 @@ data class Profile(
     val clockStyle: ClockStyle? = null,
     val accent: Long? = null,
     val dim: Float? = null,
+    val background: BackgroundType? = null,
+    val imagePath: String? = null,
+    /** Shifts sunrise/sunset triggers, in minutes (negative = earlier). */
+    val sunOffset: Int = 0,
 ) {
     companion object {
         fun defaults() = listOf(
@@ -336,6 +525,8 @@ data class WeatherConfig(
     val lat: Double? = null,
     val lon: Double? = null,
     val fahrenheit: Boolean = true,
+    /** "Rain in 15 min" when rain is about to start. */
+    val rainAlert: Boolean = true,
 )
 
 @Serializable

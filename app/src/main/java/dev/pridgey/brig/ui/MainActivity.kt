@@ -118,6 +118,7 @@ enum class Screen(val title: String, val subtitle: String, val icon: ImageVector
     PROFILES("Profiles", "Bedside & automation", Icons.Filled.Schedule),
     UPDATES("Updates & backup", "Self-update, export", Icons.Filled.SystemUpdate),
     PERMISSIONS("Permissions", "What Brig can access", Icons.Filled.Security),
+    CLOCK_BUILDER("Clock builder", "", Icons.Filled.Palette),
 }
 
 class MainActivity : ComponentActivity() {
@@ -143,13 +144,18 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen) {
     var screen by rememberSaveable { mutableStateOf(start) }
     val scope = rememberCoroutineScope()
     val update: SettingsUpdate = { f -> scope.launch { BrigApp.settings.update(f) } }
-    val back = { screen = Screen.HOME }
+    val back = { screen = if (screen == Screen.CLOCK_BUILDER) Screen.APPEARANCE else Screen.HOME }
     BackHandler(enabled = screen != Screen.HOME) { back() }
+    var wizard by rememberSaveable { mutableStateOf(settings.setupVersion == 0 && !settings.enabled) }
+    if (wizard) {
+        SetupWizard(settings, update) { wizard = false }
+        return
+    }
 
     AnimatedContent(
         targetState = screen,
         transitionSpec = {
-            val forward = targetState != Screen.HOME
+            val forward = targetState != Screen.HOME && !(initialState == Screen.CLOCK_BUILDER && targetState == Screen.APPEARANCE)
             val spec = spring<androidx.compose.ui.unit.IntOffset>(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)
             (slideInHorizontally(spec) { if (forward) it / 3 else -it / 3 } + fadeIn() + scaleIn(initialScale = 0.96f)) togetherWith
                 (slideOutHorizontally(spec) { if (forward) -it / 3 else it / 3 } + fadeOut() + scaleOut(targetScale = 0.96f))
@@ -158,7 +164,8 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen) {
     ) { s ->
         when (s) {
             Screen.HOME -> HomeScreen(settings, update) { screen = it }
-            Screen.APPEARANCE -> AppearanceScreen(settings, update, back)
+            Screen.APPEARANCE -> AppearanceScreen(settings, update, back) { screen = Screen.CLOCK_BUILDER }
+            Screen.CLOCK_BUILDER -> ClockBuilderScreen(settings, update, back)
             Screen.WIDGETS -> WidgetsScreen(settings, update, back)
             Screen.NOTIFICATIONS -> NotificationsScreen(settings, update, back)
             Screen.UNLOCK -> UnlockScreen(settings, update, back)
@@ -170,7 +177,7 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen) {
     }
 }
 
-private data class SetupStatus(
+internal data class SetupStatus(
     val a11y: Boolean,
     val listener: Boolean,
     val postNotif: Boolean,
@@ -186,7 +193,7 @@ private data class SetupStatus(
 
 /** Current permission state, re-read whenever the app comes back to the foreground. */
 @Composable
-private fun rememberSetupStatus(): Pair<SetupStatus, () -> Unit> {
+internal fun rememberSetupStatus(): Pair<SetupStatus, () -> Unit> {
     val ctx = LocalContext.current
     var tick by remember { mutableIntStateOf(0) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { tick++ }
@@ -205,14 +212,14 @@ private fun rememberSetupStatus(): Pair<SetupStatus, () -> Unit> {
     return status to { tick++ }
 }
 
-private fun openSettings(ctx: android.content.Context, action: String, withPackage: Boolean = false) {
+internal fun openSettings(ctx: android.content.Context, action: String, withPackage: Boolean = false) {
     val i = Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     if (withPackage) i.data = Uri.parse("package:${ctx.packageName}")
     runCatching { ctx.startActivity(i) }
 }
 
 @Composable
-private fun SetupGroup(status: SetupStatus, refresh: () -> Unit) {
+internal fun SetupGroup(status: SetupStatus, refresh: () -> Unit) {
     val ctx = LocalContext.current
     val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh() }
     val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh() }
@@ -246,7 +253,7 @@ private fun SetupGroup(status: SetupStatus, refresh: () -> Unit) {
 }
 
 @Composable
-private fun RestrictedSettingsHint() {
+internal fun RestrictedSettingsHint() {
     val ctx = LocalContext.current
     Banner(
         "Toggle greyed out?",
@@ -301,7 +308,7 @@ private fun HomeScreen(settings: BrigSettings, update: SettingsUpdate, navigate:
                 modifier = Modifier.padding(start = 20.dp),
             )
         }
-        val sections = Screen.entries.filter { it != Screen.HOME && it != Screen.PERMISSIONS }
+        val sections = Screen.entries.filter { it != Screen.HOME && it != Screen.PERMISSIONS && it != Screen.CLOCK_BUILDER }
         sections.chunked(2).forEachIndexed { row, pair ->
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

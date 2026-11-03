@@ -18,6 +18,8 @@ class BrigApp : Application() {
         instance = this
         settingsRepo = SettingsRepository(this, appScope)
         Notifications.createChannels(this)
+        dev.pridgey.brig.data.PhotoRotator.restore(this)
+        dev.pridgey.brig.data.PackageRepo.load(this)
         if (!BuildConfig.DEBUG) UpdateWorker.schedule(this)
     }
 
