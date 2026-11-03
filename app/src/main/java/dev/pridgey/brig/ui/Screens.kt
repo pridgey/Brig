@@ -525,7 +525,8 @@ fun NotificationsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: 
                 SwitchRow("Hide all content", "Show only the app name and \"Content hidden\"", r.hideAllContent) { v -> set { it.copy(hideAllContent = v) } }
                 SwitchRow("Show silent notifications", checked = r.showSilent) { v -> set { it.copy(showSilent = v) } }
                 SwitchRow("Quick replies", "Reply to messages without unlocking", r.allowReply) { v -> set { it.copy(allowReply = v) } }
-                SliderRow("Max shown", r.maxShown.toFloat(), 1f..8f, steps = 6, label = { it.roundToInt().toString() }) { v ->
+                SwitchRow("Group by app", "Stack notifications from the same app into one card", r.groupByApp) { v -> set { it.copy(groupByApp = v) } }
+                SliderRow(if (r.groupByApp) "Max cards shown" else "Max shown", r.maxShown.toFloat(), 1f..8f, steps = 6, label = { it.roundToInt().toString() }) { v ->
                     set { it.copy(maxShown = v.roundToInt()) }
                 }
             }

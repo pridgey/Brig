@@ -219,6 +219,7 @@ data class NotificationRules(
     val showSilent: Boolean = false,
     val maxShown: Int = 4,
     val allowReply: Boolean = true,
+    val groupByApp: Boolean = true,
     val appModes: Map<String, AppNotificationMode> = emptyMap(),
 )
 

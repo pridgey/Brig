@@ -103,6 +103,21 @@ data class BrigNotification(
     val clearable: Boolean,
 )
 
+/** Notifications from one app, newest first. */
+data class NotificationGroup(val pkg: String, val items: List<BrigNotification>) {
+    val key get() = "group:$pkg"
+    val latest get() = items.first()
+    val clearable get() = items.any { it.clearable }
+}
+
+/** Groups by app, keeping each app at the position of its newest notification. */
+fun groupNotifications(list: List<BrigNotification>, byApp: Boolean): List<NotificationGroup> =
+    if (!byApp) list.map { NotificationGroup(it.pkg, listOf(it)) }
+    else list.sortedByDescending { it.postTime }
+        .groupBy { it.pkg }
+        .map { (pkg, items) -> NotificationGroup(pkg, items) }
+        .sortedByDescending { it.latest.postTime }
+
 class BrigNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
         instance = this

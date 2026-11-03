@@ -4,6 +4,11 @@ import android.text.format.DateUtils
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -130,6 +135,8 @@ import dev.pridgey.brig.data.WidgetZone
 import androidx.compose.ui.unit.Dp
 import dev.pridgey.brig.service.BrigNotification
 import dev.pridgey.brig.service.BrigNotificationListener
+import dev.pridgey.brig.service.NotificationGroup
+import dev.pridgey.brig.service.groupNotifications
 import dev.pridgey.brig.service.MediaRepo
 import dev.pridgey.brig.util.BrigShapes
 import dev.pridgey.brig.util.Device
@@ -579,35 +586,142 @@ private fun NotificationsWidget(settings: BrigSettings, effects: ActiveEffects, 
     val visible = all.filter { n ->
         rules.appModes[n.pkg] != AppNotificationMode.BLOCK && (rules.showSilent || !n.silent)
     }
+    val groups = groupNotifications(visible, rules.groupByApp)
     var expanded by remember { mutableStateOf<String?>(null) }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        val shown = visible.take(rules.maxShown)
-        shown.forEachIndexed { i, n ->
-            androidx.compose.runtime.key(n.key) {
+    var openGroup by remember { mutableStateOf<String?>(null) }
+    fun hidden(pkg: String) = rules.hideAllContent || effects.hideContent || rules.appModes[pkg] == AppNotificationMode.HIDE_CONTENT
+    @Composable
+    fun Card(n: BrigNotification) = NotificationCard(
+        n,
+        hideContent = hidden(n.pkg),
+        allowReply = rules.allowReply,
+        expanded = expanded == n.key,
+        onToggle = { expanded = if (expanded == n.key) null else n.key },
+        controller = controller,
+    )
+    Column(Modifier.animateContentSize(spring(dampingRatio = 0.8f)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        val shown = groups.take(rules.maxShown)
+        shown.forEachIndexed { i, g ->
+            androidx.compose.runtime.key(g.key) {
                 val appear = remember { MutableTransitionState(false).apply { targetState = true } }
                 AnimatedVisibility(
                     visibleState = appear,
                     enter = fadeIn(tween(300, delayMillis = i * 60)) + slideInVertically(spring(dampingRatio = 0.7f)) { it / 2 } + scaleIn(initialScale = 0.9f),
                 ) {
-                    NotificationCard(
-                        n,
-                        hideContent = rules.hideAllContent || effects.hideContent || rules.appModes[n.pkg] == AppNotificationMode.HIDE_CONTENT,
-                        allowReply = rules.allowReply,
-                        expanded = expanded == n.key,
-                        onToggle = { expanded = if (expanded == n.key) null else n.key },
-                        controller = controller,
-                    )
+                    when {
+                        g.items.size == 1 -> Card(g.latest)
+                        openGroup == g.key -> ExpandedGroup(g, onCollapse = { openGroup = null }) { Card(it) }
+                        else -> CollapsedGroupCard(g, hidden(g.pkg), onClick = { openGroup = g.key })
+                    }
                 }
             }
         }
-        if (visible.size > shown.size) {
+        val more = groups.drop(shown.size).sumOf { it.items.size }
+        if (more > 0) {
             Text(
-                "+${visible.size - shown.size} more",
+                "+$more more",
                 style = MaterialTheme.typography.labelMedium,
                 color = Color.White.copy(alpha = 0.6f),
                 modifier = Modifier.padding(start = 8.dp),
             )
         }
+    }
+}
+
+private fun dismissAll(g: NotificationGroup) = g.items.filter { it.clearable }.forEach { BrigNotificationListener.dismiss(it.key) }
+
+@Composable
+private fun CountPill(count: Int) {
+    Box(
+        Modifier.padding(start = 6.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.18f)).padding(horizontal = 7.dp, vertical = 1.dp),
+    ) {
+        Text("$count", style = MaterialTheme.typography.labelSmall, color = Color.White)
+    }
+}
+
+private fun relativeTime(t: Long) =
+    DateUtils.getRelativeTimeSpanString(t, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE).toString()
+
+/** One card standing in for a stack of notifications from the same app. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CollapsedGroupCard(g: NotificationGroup, hideContent: Boolean, onClick: () -> Unit) {
+    val previews = 3
+    val content: @Composable () -> Unit = {
+        Column {
+            GlassCard(onClick = onClick) {
+                Row(verticalAlignment = Alignment.Top) {
+                    g.latest.appIcon?.let {
+                        Image(it, null, Modifier.size(38.dp).clip(PolygonShape(BrigShapes.cookie12)), contentScale = ContentScale.Crop)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(g.latest.appLabel, style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.7f), maxLines = 1)
+                            CountPill(g.items.size)
+                            Spacer(Modifier.weight(1f))
+                            Text(relativeTime(g.latest.postTime), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.5f))
+                        }
+                        if (hideContent) {
+                            Text("${g.items.size} notifications", style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.8f))
+                        } else {
+                            g.items.take(previews).forEach { n ->
+                                Text(
+                                    buildAnnotatedString {
+                                        if (n.title.isNotBlank()) {
+                                            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = Color.White)) { append(n.title) }
+                                            if (n.text.isNotBlank()) append("  ")
+                                        }
+                                        append(n.text)
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Color.White.copy(alpha = 0.8f),
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (g.items.size > previews) {
+                                Text("+${g.items.size - previews} more", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.5f))
+                            }
+                        }
+                    }
+                }
+            }
+            // Peeking edge so it reads as a stack.
+            Box(
+                Modifier.padding(horizontal = 18.dp).fillMaxWidth().height(6.dp)
+                    .clip(RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
+                    .background(Color.White.copy(alpha = 0.07f)),
+            )
+        }
+    }
+    if (g.clearable) {
+        val state = rememberSwipeToDismissBoxState(confirmValueChange = { v ->
+            if (v != SwipeToDismissBoxValue.Settled) {
+                dismissAll(g)
+                true
+            } else false
+        })
+        SwipeToDismissBox(state = state, backgroundContent = {}) { content() }
+    } else {
+        content()
+    }
+}
+
+/** Header plus each notification in the group as its own card. */
+@Composable
+private fun ExpandedGroup(g: NotificationGroup, onCollapse: () -> Unit, card: @Composable (BrigNotification) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = onCollapse).padding(start = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(g.latest.appLabel, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.85f), maxLines = 1)
+            CountPill(g.items.size)
+            Spacer(Modifier.weight(1f))
+            if (g.clearable) TextButton(onClick = { dismissAll(g) }) { Text("Clear all", color = Color.White.copy(alpha = 0.8f)) }
+            TextButton(onClick = onCollapse) { Text("Collapse", color = Color.White.copy(alpha = 0.8f)) }
+        }
+        g.items.forEach { n -> androidx.compose.runtime.key(n.key) { card(n) } }
     }
 }
 
@@ -632,10 +746,7 @@ private fun NotificationCard(
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(n.appLabel, style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.weight(1f), maxLines = 1)
-                        Text(
-                            DateUtils.getRelativeTimeSpanString(n.postTime, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE).toString(),
-                            style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.5f),
-                        )
+                        Text(relativeTime(n.postTime), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.5f))
                     }
                     if (hideContent) {
                         Text("Content hidden", style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.8f))

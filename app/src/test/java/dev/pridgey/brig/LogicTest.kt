@@ -24,6 +24,19 @@ import org.junit.Test
 import kotlin.random.Random
 
 class LogicTest {
+    private fun notif(key: String, pkg: String, t: Long) = dev.pridgey.brig.service.BrigNotification(
+        key, pkg, pkg, "t", "x", t, null, null, null, null, silent = false, clearable = true,
+    )
+
+    @Test
+    fun notificationsGroupByApp() {
+        val list = listOf(notif("a1", "a", 10), notif("b1", "b", 30), notif("a2", "a", 20), notif("c1", "c", 5))
+        val grouped = dev.pridgey.brig.service.groupNotifications(list, byApp = true)
+        assertEquals(listOf("b", "a", "c"), grouped.map { it.pkg })
+        assertEquals(listOf("a2", "a1"), grouped[1].items.map { it.key })
+        assertEquals(4, dev.pridgey.brig.service.groupNotifications(list, byApp = false).size)
+    }
+
     @Test
     fun windowsWrapPastMidnight() {
         assertTrue(ProfileEngine.inWindow(23 * 60, 22 * 60, 7 * 60))
