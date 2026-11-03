@@ -22,6 +22,8 @@ data class BrigSettings(
     val packages: PackagesConfig = PackagesConfig(),
     val photos: PhotoSourceConfig = PhotoSourceConfig(),
     val guest: GuestConfig = GuestConfig(),
+    val sleep: SleepConfig = SleepConfig(),
+    val flashcards: FlashcardConfig = FlashcardConfig(),
     /** 0 until the first-run assistant finishes. */
     val setupVersion: Int = 0,
 ) {
@@ -119,6 +121,14 @@ data class Appearance(
     val ambient: Boolean = false,
     val videoPath: String? = null,
     val customClock: CustomClock = CustomClock.starter(),
+    /** While music plays, the background becomes the blurred album art. */
+    val albumArtBackground: Boolean = false,
+    /** Take the accent color from the background photo (or album art). */
+    val accentFromPhoto: Boolean = false,
+    /** The date line shows what's next ("Standup in 25 min") when something is coming up. */
+    val smartDate: Boolean = true,
+    /** Minutes to allow for travel when an event has a location ("Leave in 10 min"). */
+    val travelBuffer: Int = 15,
 )
 
 // ---------------------------------------------------------------- Custom clock
@@ -370,6 +380,8 @@ enum class WidgetType(val label: String, val defaultOn: Boolean, val defaultZone
     SPORTS("Sports scores", false),
     PACKAGES("Packages", false),
     MEMORIES("On this day", false),
+    MOOD("Mood check-in", false),
+    FLASHCARD("Word of the day", false),
 }
 
 @Serializable
@@ -403,6 +415,8 @@ data class NotificationRules(
     val conversationView: Boolean = true,
     /** Only app icons until tapped. */
     val glanceMode: Boolean = false,
+    /** One-time codes get a big card that expires after 5 minutes. */
+    val otpCard: Boolean = true,
     val appModes: Map<String, AppNotificationMode> = emptyMap(),
 )
 
@@ -531,3 +545,27 @@ data class WeatherConfig(
 
 @Serializable
 data class UpdateConfig(val autoCheck: Boolean = true)
+
+@Serializable
+data class SleepConfig(
+    val enabled: Boolean = false,
+    /** Minutes after midnight. */
+    val bedtime: Int = 23 * 60,
+    val wake: Int = 6 * 60,
+    /** Extra dim and warmth after bedtime. */
+    val dimAfter: Boolean = true,
+)
+
+enum class FlashcardSource(val label: String) {
+    WORDS("Word of the day"),
+    MY_CARDS("My flashcards"),
+}
+
+@Serializable
+data class FlashcardConfig(
+    val source: FlashcardSource = FlashcardSource.WORDS,
+    /** One card per line: "front | back". */
+    val cards: String = "",
+    /** My flashcards: a new card each time the screen locks instead of once a day. */
+    val everyLock: Boolean = false,
+)

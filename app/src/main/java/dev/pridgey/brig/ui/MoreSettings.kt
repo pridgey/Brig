@@ -246,6 +246,9 @@ fun LiveEffectsSettings(a: Appearance, set: ((Appearance) -> Appearance) -> Unit
                 }
             }
         }
+        SwitchRow("Album art background", "While music plays, the background becomes the blurred album art", a.albumArtBackground) { v ->
+            set { it.copy(albumArtBackground = v) }
+        }
         SwitchRow("Tilt parallax", "The background shifts as you tilt the phone", a.tiltParallax) { v -> set { it.copy(tiltParallax = v) } }
         SwitchRow("Weather effects", "Rain, snow, storms or fog over the background, matching the weather. Needs a weather city.", a.weatherFx) { v ->
             set { it.copy(weatherFx = v) }
@@ -417,3 +420,111 @@ fun GuestSettings(settings: BrigSettings, update: SettingsUpdate) {
     }
 }
 
+
+// ---------------------------------------------------------------- Date line
+
+@Composable
+fun DateSettings(a: Appearance, update: SettingsUpdate) {
+    val ctx = LocalContext.current
+    fun set(f: (Appearance) -> Appearance) = update { it.copy(appearance = f(it.appearance)) }
+    SettingsGroup("Date line") {
+        SwitchRow("Say what's next", "\"Standup in 25 min\" or \"Leave in 10 min for Dentist\" instead of the date when something's coming up", a.smartDate) { v ->
+            set { it.copy(smartDate = v) }
+        }
+        if (a.smartDate) {
+            SliderRow("Travel time", a.travelBuffer.toFloat(), 0f..60f, steps = 11, label = { "${it.roundToInt()} min" }) { v ->
+                set { it.copy(travelBuffer = v.roundToInt()) }
+            }
+            Note("Used for events with a location. Set it to 0 to never show \"Leave in\".")
+            if (!dev.pridgey.brig.data.CalendarRepo.hasPermission(ctx)) Note("Needs calendar access (Permissions).")
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Mood
+
+@Composable
+fun MoodSettings() {
+    val ctx = LocalContext.current
+    remember { dev.pridgey.brig.data.MoodStore.load(ctx) }
+    val map by dev.pridgey.brig.data.MoodStore.moods.collectAsState()
+    var confirm by remember { mutableStateOf(false) }
+    SettingsGroup("Mood check-in") {
+        val today = java.time.LocalDate.now()
+        val month = map.filterKeys { it.startsWith(today.toString().take(7)) }
+        Note(
+            if (map.isEmpty()) "Tap a face on the lock screen once a day. Your check-ins stay on this phone."
+            else "${map.size} check-ins · ${month.size} this month · ${dev.pridgey.brig.data.MoodStore.streak(map, today)}-day streak",
+        )
+        if (month.isNotEmpty()) {
+            Row(Modifier.padding(horizontal = 20.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                dev.pridgey.brig.data.MoodStore.faces.forEachIndexed { i, f ->
+                    Text("$f ${month.values.count { it == i }}", style = MaterialTheme.typography.titleMedium)
+                }
+            }
+        }
+        if (map.isNotEmpty()) {
+            ClickRow(if (confirm) "Tap again to delete everything" else "Delete mood history", icon = Icons.Filled.Close) {
+                if (confirm) { dev.pridgey.brig.data.MoodStore.clear(ctx); confirm = false } else confirm = true
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Flashcards
+
+@Composable
+fun FlashcardSettings(cfg: dev.pridgey.brig.data.FlashcardConfig, update: SettingsUpdate) {
+    fun set(f: (dev.pridgey.brig.data.FlashcardConfig) -> dev.pridgey.brig.data.FlashcardConfig) = update { it.copy(flashcards = f(it.flashcards)) }
+    var text by remember { mutableStateOf(cfg.cards) }
+    SettingsGroup("Word of the day") {
+        ChipChoice(dev.pridgey.brig.data.FlashcardSource.entries, cfg.source, { it.label }) { s -> set { it.copy(source = s) } }
+        if (cfg.source == dev.pridgey.brig.data.FlashcardSource.MY_CARDS) {
+            OutlinedTextField(
+                value = text, onValueChange = { text = it }, minLines = 5, maxLines = 12,
+                label = { Text("One card per line: front | back") },
+                placeholder = { Text("hola | hello\ngracias | thank you") },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+            val count = dev.pridgey.brig.data.Flashcards.parse(text).size
+            Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { set { it.copy(cards = text) } }, enabled = text != cfg.cards) { Text("Save $count cards") }
+            }
+            SwitchRow("New card every lock", "Off: one card a day", cfg.everyLock) { v -> set { it.copy(everyLock = v) } }
+            Note("Paste from a spreadsheet too: a tab between the columns works like |.")
+        } else Note("A new word each day, with its meaning on the back. Tap the card to flip it.")
+    }
+}
+
+// ---------------------------------------------------------------- Bedtime
+
+@Composable
+fun BedtimeSettings(cfg: dev.pridgey.brig.data.SleepConfig, update: SettingsUpdate) {
+    val ctx = LocalContext.current
+    fun set(f: (dev.pridgey.brig.data.SleepConfig) -> dev.pridgey.brig.data.SleepConfig) = update { it.copy(sleep = f(it.sleep)) }
+    var pick by remember { mutableStateOf<Boolean?>(null) }
+    val suggestion = remember { dev.pridgey.brig.data.Sleep.suggestBedtime(dev.pridgey.brig.data.Sleep.nightlyOffTimes(ctx)) }
+    SettingsGroup("Bedtime nudge") {
+        SwitchRow("Nudge me after bedtime", "A gentle note on the lock screen, plus a dimmer, warmer screen", cfg.enabled) { v -> set { it.copy(enabled = v) } }
+        if (cfg.enabled) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.material3.OutlinedButton(onClick = { pick = true }) { Text("Bedtime ${dev.pridgey.brig.data.ProfileEngine.formatMinute(cfg.bedtime)}") }
+                androidx.compose.material3.OutlinedButton(onClick = { pick = false }) { Text("Until ${dev.pridgey.brig.data.ProfileEngine.formatMinute(cfg.wake)}") }
+            }
+            SwitchRow("Dim and warm the screen", checked = cfg.dimAfter) { v -> set { it.copy(dimAfter = v) } }
+        }
+        if (suggestion != null && suggestion != cfg.bedtime) {
+            ClickRow(
+                "Use ${dev.pridgey.brig.data.ProfileEngine.formatMinute(suggestion)}?",
+                "That's when you usually put the phone down, based on the last two weeks",
+                Icons.Filled.Refresh,
+            ) { set { it.copy(bedtime = suggestion, enabled = true) } }
+        }
+    }
+    pick?.let { start ->
+        TimePickDialog(if (start) cfg.bedtime else cfg.wake, onDismiss = { pick = null }) { m ->
+            set { if (start) it.copy(bedtime = m) else it.copy(wake = m) }
+            pick = null
+        }
+    }
+}

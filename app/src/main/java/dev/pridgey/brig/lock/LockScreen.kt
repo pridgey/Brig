@@ -159,6 +159,7 @@ import dev.pridgey.brig.data.BackgroundType
 import dev.pridgey.brig.data.PhotoRotator
 import dev.pridgey.brig.data.PhotoSource
 import dev.pridgey.brig.data.Sun
+import dev.pridgey.brig.data.Sleep
 
 /** Background opacity for glance chips, from Appearance. */
 val LocalChipAlpha = compositionLocalOf { 0.12f }
@@ -173,7 +174,7 @@ fun LockScreen(settings: BrigSettings, controller: LockController) {
 /** Widgets hidden while guest mode is on. */
 private val personalWidgets = setOf(
     WidgetType.NOTIFICATIONS, WidgetType.MEDIA, WidgetType.CALENDAR, WidgetType.STATS, WidgetType.HEALTH,
-    WidgetType.PACKAGES, WidgetType.MEMORIES, WidgetType.LIVE, WidgetType.ALARM_CARD, WidgetType.TOGGLES,
+    WidgetType.PACKAGES, WidgetType.MEMORIES, WidgetType.LIVE, WidgetType.ALARM_CARD, WidgetType.TOGGLES, WidgetType.MOOD,
 )
 
 /** What the lock screen shows in guest mode: no personal widgets, and only the guest apps. */
@@ -211,14 +212,33 @@ private fun LockScreenContent(rawSettings: BrigSettings, controller: LockControl
         background = effects.background ?: if (effects.imagePath != null) BackgroundType.IMAGE else base.background,
         imagePath = photoPath,
     )
-    val accent = resolveAccent(effects.accent ?: appearance.accent)
+    // Album art takes over the background while music plays.
+    val media by MediaRepo.state.collectAsState()
+    val albumArt = media?.takeIf { appearance.albumArtBackground && it.playing && !effects.bedside }?.art
+    // Accent from the photo (or album art) when that's on; a profile's accent still wins.
+    val photoAccent by produceState<Long?>(null, appearance.accentFromPhoto, albumArt, photoPath, appearance.background) {
+        value = if (!appearance.accentFromPhoto) null else withContext(Dispatchers.Default) {
+            when {
+                albumArt != null -> accentOf(albumArt)
+                appearance.background == BackgroundType.IMAGE && photoPath != null -> loadPhoto(photoPath, 160)?.let(::accentOf)
+                else -> null
+            }
+        }
+    }
+    val accent = resolveAccent(effects.accent ?: photoAccent ?: appearance.accent)
     val clockStyle = effects.clockStyle ?: appearance.clockStyle
     val lux by rememberLux(appearance.ambient && !effects.bedside)
-    val tuning = Ambient.tune(effects.dim ?: appearance.dim, lux)
+    val ambientTuning = Ambient.tune(effects.dim ?: appearance.dim, lux)
+    // Past bedtime: a little dimmer and warmer, on top of whatever else applies.
+    val late = Sleep.isLate(minuteOfDay, settings.sleep) && settings.sleep.dimAfter
+    val tuning = if (!late) ambientTuning else ambientTuning.copy(
+        dim = (ambientTuning.dim + 0.2f).coerceAtMost(0.85f),
+        warmth = (ambientTuning.warmth + 0.15f).coerceAtMost(0.3f),
+    )
     val dim = tuning.dim
     val tilt by rememberTilt(appearance.tiltParallax && !effects.bedside)
 
-    val depthOn = appearance.depth && appearance.background == BackgroundType.IMAGE && photoPath != null && !effects.bedside
+    val depthOn = appearance.depth && appearance.background == BackgroundType.IMAGE && photoPath != null && !effects.bedside && albumArt == null
     val cutout by produceState<String?>(null, photoPath, depthOn) {
         value = if (depthOn && photoPath != null) {
             dev.pridgey.brig.util.Segmenter.cached(context, photoPath) ?: dev.pridgey.brig.util.Segmenter.cutout(context, photoPath)
@@ -291,7 +311,10 @@ private fun LockScreenContent(rawSettings: BrigSettings, controller: LockControl
             scaleX = s
             scaleY = s
         }
-        if (!effects.bedside) LockBackground(appearance, accent, backgroundModifier)
+        if (!effects.bedside) {
+            LockBackground(appearance, accent, backgroundModifier)
+            AlbumArtBackground(albumArt, backgroundModifier)
+        }
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = if (effects.bedside) 1f else dim)))
         if (tuning.warmth > 0f && !effects.bedside) Box(Modifier.fillMaxSize().background(Color(0xFFFF8A3D).copy(alpha = tuning.warmth)))
 
@@ -448,6 +471,7 @@ private fun MainContent(
         header = {
             if (settings.guest.active) GuestBanner(controller, Modifier.align(align))
             Clock(clockStyle, now, ClockSpec.from(appearance, accent), Modifier.align(align))
+            SleepNudge(now.hour * 60 + now.minute, settings.sleep, Modifier.align(align))
             appearance.secondaryZone?.let { z -> SecondaryZone(z, now, appearance.use24h, Modifier.align(align)) }
             val caption = rotated?.caption
             if (caption != null && settings.photos.source != PhotoSource.SINGLE && appearance.background == BackgroundType.IMAGE) {
@@ -477,12 +501,16 @@ private fun MainContent(
         single = { type, inBottom ->
             val a = if (inBottom) Alignment.CenterHorizontally else align
             when (type) {
-                WidgetType.DATE -> Text(
+                WidgetType.DATE -> if (appearance.smartDate && !settings.guest.active) {
+                    SmartDateLine(now, appearance.travelBuffer, Modifier.align(a))
+                } else Text(
                     now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
                     style = MaterialTheme.typography.titleLarge,
                     color = Color.White.copy(alpha = 0.92f),
                     modifier = Modifier.align(a),
                 )
+                WidgetType.MOOD -> LiveMood()
+                WidgetType.FLASHCARD -> LiveFlashcard(settings.flashcards, accent)
                 WidgetType.CALENDAR -> LiveCalendar(now, settings.calendar, accent)
                 WidgetType.MEDIA -> LiveMedia(settings.media, accent, now)
                 WidgetType.QUOTE -> QuoteWidget(now)
@@ -899,6 +927,8 @@ private fun LockMockContent(settings: BrigSettings) {
                         Text("7:42", style = MaterialTheme.typography.headlineSmall)
                         androidx.compose.material3.LinearProgressIndicator(progress = { 0.6f }, modifier = Modifier.fillMaxWidth().clip(CircleShape), color = accent, trackColor = Color.White.copy(alpha = 0.15f))
                     }
+                    WidgetType.MOOD -> MoodView(mapOf(java.time.LocalDate.now().minusDays(1).toString() to 3, java.time.LocalDate.now().minusDays(2).toString() to 4), java.time.LocalDate.now()) {}
+                    WidgetType.FLASHCARD -> FlashcardView(dev.pridgey.brig.data.Flashcards.today(settings.flashcards, java.time.LocalDate.now(), 0), "Word of the day", accent)
                     WidgetType.ALARM_CARD -> AlarmCardView(nowMs + 8 * 3600_000L, accent, {}, {})
                     WidgetType.HOURLY -> HourlyView(sampleHours(nowMs), if (settings.weather.rainAlert) "Rain in 25 min" else null, accent)
                     WidgetType.HEALTH -> if (settings.health.style == dev.pridgey.brig.data.HealthStyle.CHIP) {

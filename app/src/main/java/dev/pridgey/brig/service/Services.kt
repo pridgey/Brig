@@ -33,6 +33,8 @@ import androidx.core.graphics.drawable.toBitmap
 import dev.pridgey.brig.BrigApp
 import dev.pridgey.brig.R
 import dev.pridgey.brig.data.AppsRepo
+import dev.pridgey.brig.data.DiagEvent
+import dev.pridgey.brig.data.DiagLog
 import dev.pridgey.brig.data.Stats
 import dev.pridgey.brig.lock.LockActivity
 import dev.pridgey.brig.ui.MainActivity
@@ -49,8 +51,14 @@ class BrigAccessibilityService : AccessibilityService() {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                Intent.ACTION_SCREEN_OFF ->
-                    if (BrigApp.settings.flow.value.enabled) LockActivity.show(this@BrigAccessibilityService)
+                Intent.ACTION_SCREEN_OFF -> {
+                    val now = java.time.LocalTime.now()
+                    dev.pridgey.brig.data.Sleep.recordScreenOff(context, now.hour * 60 + now.minute)
+                    if (BrigApp.settings.flow.value.enabled) {
+                        DiagLog.record(context, DiagEvent.SCREEN_OFF)
+                        LockActivity.show(this@BrigAccessibilityService)
+                    } else DiagLog.record(context, DiagEvent.LOCK_SKIPPED)
+                }
                 Intent.ACTION_SCREEN_ON -> Stats.recordWake(context)
             }
         }
@@ -60,6 +68,7 @@ class BrigAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         running.value = true
+        DiagLog.record(this, DiagEvent.A11Y_ON)
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_SCREEN_ON)
@@ -76,6 +85,7 @@ class BrigAccessibilityService : AccessibilityService() {
         runCatching { unregisterReceiver(receiver) }
         instance = null
         running.value = false
+        DiagLog.record(this, DiagEvent.A11Y_OFF)
         super.onDestroy()
     }
 
@@ -204,7 +214,10 @@ object MediaRepo {
 class LockService : Service() {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == Intent.ACTION_SCREEN_OFF && BrigApp.settings.flow.value.enabled) showLock()
+            if (intent.action == Intent.ACTION_SCREEN_OFF && BrigApp.settings.flow.value.enabled) {
+                DiagLog.record(context, DiagEvent.SCREEN_OFF)
+                showLock()
+            }
         }
     }
 
@@ -258,6 +271,7 @@ class LockService : Service() {
             .setTimeoutAfter(15_000)
             .build()
         NotificationManagerCompat.from(this).notify(Notifications.LOCK_FSI_ID, n)
+        DiagLog.record(this, DiagEvent.FALLBACK)
     }
 
     companion object {
@@ -275,6 +289,7 @@ class LockService : Service() {
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
+        DiagLog.record(context, if (intent.action == Intent.ACTION_BOOT_COMPLETED) DiagEvent.BOOT else DiagEvent.UPDATED)
         val pending = goAsync()
         BrigApp.instance.appScope.launch {
             try {

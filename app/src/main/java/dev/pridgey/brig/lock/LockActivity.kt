@@ -102,6 +102,8 @@ class LockActivity : ComponentActivity() {
 
     private fun rotatePhoto() {
         val ctx = applicationContext
+        dev.pridgey.brig.data.DiagLog.record(ctx, dev.pridgey.brig.data.DiagEvent.LOCK_SHOWN)
+        dev.pridgey.brig.data.Flashcards.nextLock(ctx)
         BrigApp.instance.appScope.launch { PhotoRotator.maybeRotate(ctx, BrigApp.settings.load().photos) }
     }
 
@@ -259,6 +261,17 @@ class LockController(private val activity: ComponentActivity) {
         val i = Intent(Intent.ACTION_VIEW).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         if (type != null) i.setDataAndType(uri, type) else i.data = uri
         start(i)
+    }
+
+    /** Copies only once the phone is unlocked, so codes never sit on the clipboard while locked. */
+    fun copyAfterUnlock(text: String) = requestUnlock {
+        val cm = activity.getSystemService(android.content.ClipboardManager::class.java)
+        val clip = android.content.ClipData.newPlainText("Code", text)
+        if (Build.VERSION.SDK_INT >= 33) {
+            clip.description.extras = android.os.PersistableBundle().apply { putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true) }
+        }
+        cm.setPrimaryClip(clip)
+        if (Build.VERSION.SDK_INT < 33) toast("Code copied")
     }
 
     // ---------------------------------------------------------------- Guest mode

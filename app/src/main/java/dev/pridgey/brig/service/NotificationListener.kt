@@ -110,6 +110,7 @@ class BrigNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
         instance = this
         connected.value = true
+        dev.pridgey.brig.data.DiagLog.record(this, dev.pridgey.brig.data.DiagEvent.LISTENER_ON)
         refresh()
         MediaRepo.start(this)
     }
@@ -117,6 +118,7 @@ class BrigNotificationListener : NotificationListenerService() {
     override fun onListenerDisconnected() {
         instance = null
         connected.value = false
+        dev.pridgey.brig.data.DiagLog.record(this, dev.pridgey.brig.data.DiagEvent.LISTENER_OFF)
         MediaRepo.stop()
     }
 

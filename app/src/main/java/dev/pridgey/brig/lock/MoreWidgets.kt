@@ -42,6 +42,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -399,5 +400,150 @@ internal fun LiveMemories(controller: LockController) {
     }
     MemoriesView(thumbs, caption) { i ->
         memories.getOrNull(i)?.let { controller.openUri(it.uri, "image/*") }
+    }
+}
+
+// ---------------------------------------------------------------- Mood check-in
+
+@Composable
+fun MoodView(map: Map<String, Int>, today: java.time.LocalDate, onPick: (Int) -> Unit) {
+    val logged = map[today.toString()]
+    var picking by androidx.compose.runtime.remember(logged) { androidx.compose.runtime.mutableStateOf(logged == null) }
+    GlassCard {
+        if (picking) {
+            Text("How are you today?", style = MaterialTheme.typography.titleSmall)
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                dev.pridgey.brig.data.MoodStore.faces.forEachIndexed { i, f ->
+                    Box(
+                        Modifier.size(48.dp).clip(CircleShape)
+                            .background(if (logged == i) Color(dev.pridgey.brig.data.MoodStore.colors[i]).copy(alpha = 0.4f) else Color.White.copy(alpha = 0.08f))
+                            .clickable { onPick(i); picking = false },
+                        contentAlignment = Alignment.Center,
+                    ) { Text(f, style = MaterialTheme.typography.headlineSmall) }
+                }
+            }
+        } else {
+            val streak = dev.pridgey.brig.data.MoodStore.streak(map, today)
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { picking = true }) {
+                Text(dev.pridgey.brig.data.MoodStore.faces[logged ?: 2], style = MaterialTheme.typography.headlineMedium)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Checked in", style = MaterialTheme.typography.titleSmall)
+                    Text(if (streak > 1) "$streak-day streak · tap to change" else "Tap to change", style = MaterialTheme.typography.bodySmall, color = dim)
+                }
+            }
+            // This month as a grid of colored dots.
+            val first = today.withDayOfMonth(1)
+            val days = today.lengthOfMonth()
+            val offset = first.dayOfWeek.value % 7
+            Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                (0 until (offset + days + 6) / 7).forEach { week ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        (0 until 7).forEach { col ->
+                            val day = week * 7 + col - offset + 1
+                            val mood = if (day in 1..days) map[first.withDayOfMonth(day).toString()] else null
+                            Box(
+                                Modifier.size(14.dp).clip(RoundedCornerShape(4.dp)).background(
+                                    when {
+                                        day !in 1..days -> Color.Transparent
+                                        mood != null -> Color(dev.pridgey.brig.data.MoodStore.colors[mood])
+                                        day > today.dayOfMonth -> Color.White.copy(alpha = 0.04f)
+                                        else -> Color.White.copy(alpha = 0.12f)
+                                    },
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun LiveMood() {
+    val ctx = LocalContext.current
+    remember { dev.pridgey.brig.data.MoodStore.load(ctx) }
+    val map by dev.pridgey.brig.data.MoodStore.moods.collectAsState()
+    val today = java.time.LocalDate.now()
+    MoodView(map, today) { dev.pridgey.brig.data.MoodStore.set(ctx, today, it) }
+}
+
+// ---------------------------------------------------------------- Flashcards
+
+@Composable
+fun FlashcardView(card: dev.pridgey.brig.data.Flashcard, title: String, accent: Color) {
+    var flipped by androidx.compose.runtime.remember(card) { androidx.compose.runtime.mutableStateOf(false) }
+    val angle by androidx.compose.animation.core.animateFloatAsState(
+        if (flipped) 180f else 0f, androidx.compose.animation.core.spring(dampingRatio = 0.7f, stiffness = 220f), label = "flip",
+    )
+    Box(
+        Modifier.fillMaxWidth().graphicsLayer {
+            rotationY = angle
+            cameraDistance = 14f * density
+        }.clip(RoundedCornerShape(26.dp)).clickable { flipped = !flipped },
+    ) {
+        GlassCard {
+            // Undo the mirror on the back face.
+            Column(Modifier.fillMaxWidth().graphicsLayer { rotationY = if (angle > 90f) 180f else 0f }) {
+                Text(title.uppercase(), style = MaterialTheme.typography.labelSmall, color = accent)
+                if (angle <= 90f) {
+                    Text(card.front, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text(if (card.hint.isNotBlank()) "${card.hint} · tap to flip" else "Tap to flip", style = MaterialTheme.typography.bodySmall, color = dim)
+                } else {
+                    Text(card.back, style = MaterialTheme.typography.bodyLarge)
+                    Text(card.front, style = MaterialTheme.typography.bodySmall, color = dim)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun LiveFlashcard(cfg: dev.pridgey.brig.data.FlashcardConfig, accent: Color) {
+    val ctx = LocalContext.current
+    val card = remember(cfg) {
+        dev.pridgey.brig.data.Flashcards.today(cfg, java.time.LocalDate.now(), dev.pridgey.brig.data.Flashcards.lockCount(ctx))
+    }
+    FlashcardView(card, if (cfg.source == dev.pridgey.brig.data.FlashcardSource.WORDS) "Word of the day" else "Flashcard", accent)
+}
+
+// ---------------------------------------------------------------- What's next
+
+@Composable
+internal fun SmartDateLine(now: LocalDateTime, travelBuffer: Int, modifier: Modifier) {
+    val ctx = LocalContext.current
+    val events by produceState(emptyList<dev.pridgey.brig.data.CalEvent>(), now.hour, now.minute) {
+        value = withContext(Dispatchers.IO) { dev.pridgey.brig.data.CalendarRepo.upcoming(ctx, 4, 4, includeAllDay = false) }
+    }
+    val next = dev.pridgey.brig.data.NextUp.label(events, System.currentTimeMillis(), travelBuffer)
+    androidx.compose.animation.AnimatedContent(next, modifier, label = "nextup") { label ->
+        Column {
+            Text(
+                label ?: now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
+                style = MaterialTheme.typography.titleLarge,
+                color = Color.White.copy(alpha = 0.92f),
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            if (label != null) {
+                Text(now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), style = MaterialTheme.typography.labelMedium, color = dim)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Sleep nudge
+
+@Composable
+internal fun SleepNudge(minute: Int, cfg: dev.pridgey.brig.data.SleepConfig, modifier: Modifier) {
+    if (!dev.pridgey.brig.data.Sleep.isLate(minute, cfg)) return
+    val past = dev.pridgey.brig.data.Sleep.minutesPast(minute, cfg.bedtime)
+    Row(
+        modifier.clip(CircleShape).background(Color(0xFF3A3F7A).copy(alpha = 0.45f)).padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("🌙", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.width(8.dp))
+        Text(dev.pridgey.brig.data.Sleep.message(past), style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.85f))
     }
 }

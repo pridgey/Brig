@@ -119,6 +119,7 @@ enum class Screen(val title: String, val subtitle: String, val icon: ImageVector
     UPDATES("Updates & backup", "Self-update, export", Icons.Filled.SystemUpdate),
     PERMISSIONS("Permissions", "What Brig can access", Icons.Filled.Security),
     CLOCK_BUILDER("Clock builder", "", Icons.Filled.Palette),
+    DIAGNOSTICS("Diagnostics", "", Icons.Filled.Security),
 }
 
 class MainActivity : ComponentActivity() {
@@ -144,7 +145,13 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen) {
     var screen by rememberSaveable { mutableStateOf(start) }
     val scope = rememberCoroutineScope()
     val update: SettingsUpdate = { f -> scope.launch { BrigApp.settings.update(f) } }
-    val back = { screen = if (screen == Screen.CLOCK_BUILDER) Screen.APPEARANCE else Screen.HOME }
+    val back = {
+        screen = when (screen) {
+            Screen.CLOCK_BUILDER -> Screen.APPEARANCE
+            Screen.DIAGNOSTICS -> Screen.PERMISSIONS
+            else -> Screen.HOME
+        }
+    }
     BackHandler(enabled = screen != Screen.HOME) { back() }
     var wizard by rememberSaveable { mutableStateOf(settings.setupVersion == 0 && !settings.enabled) }
     if (wizard) {
@@ -155,7 +162,7 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen) {
     AnimatedContent(
         targetState = screen,
         transitionSpec = {
-            val forward = targetState != Screen.HOME && !(initialState == Screen.CLOCK_BUILDER && targetState == Screen.APPEARANCE)
+            val forward = targetState != Screen.HOME && targetState.ordinal > initialState.ordinal
             val spec = spring<androidx.compose.ui.unit.IntOffset>(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)
             (slideInHorizontally(spec) { if (forward) it / 3 else -it / 3 } + fadeIn() + scaleIn(initialScale = 0.96f)) togetherWith
                 (slideOutHorizontally(spec) { if (forward) -it / 3 else it / 3 } + fadeOut() + scaleOut(targetScale = 0.96f))
@@ -166,13 +173,14 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen) {
             Screen.HOME -> HomeScreen(settings, update) { screen = it }
             Screen.APPEARANCE -> AppearanceScreen(settings, update, back) { screen = Screen.CLOCK_BUILDER }
             Screen.CLOCK_BUILDER -> ClockBuilderScreen(settings, update, back)
+            Screen.DIAGNOSTICS -> DiagnosticsScreen(settings, update, back)
             Screen.WIDGETS -> WidgetsScreen(settings, update, back)
             Screen.NOTIFICATIONS -> NotificationsScreen(settings, update, back)
             Screen.UNLOCK -> UnlockScreen(settings, update, back)
             Screen.SHORTCUTS -> ShortcutsScreen(settings, update, back)
             Screen.PROFILES -> ProfilesScreen(settings, update, back)
             Screen.UPDATES -> UpdatesScreen(settings, update, back)
-            Screen.PERMISSIONS -> PermissionsScreen(back)
+            Screen.PERMISSIONS -> PermissionsScreen(back) { screen = Screen.DIAGNOSTICS }
         }
     }
 }
@@ -263,11 +271,17 @@ internal fun RestrictedSettingsHint() {
 }
 
 @Composable
-private fun PermissionsScreen(onBack: () -> Unit) {
+private fun PermissionsScreen(onBack: () -> Unit, onDiagnostics: () -> Unit) {
     val (status, refresh) = rememberSetupStatus()
     ScreenScaffold("Permissions", onBack) {
         item { SetupGroup(status, refresh) }
         item { RestrictedSettingsHint() }
+        item {
+            Banner(
+                "Brig not showing up?", "Run diagnostics to see what's wrong and fix it",
+                Icons.Filled.Info, MaterialTheme.colorScheme.tertiaryContainer, onDiagnostics,
+            )
+        }
     }
 }
 
@@ -308,7 +322,7 @@ private fun HomeScreen(settings: BrigSettings, update: SettingsUpdate, navigate:
                 modifier = Modifier.padding(start = 20.dp),
             )
         }
-        val sections = Screen.entries.filter { it != Screen.HOME && it != Screen.PERMISSIONS && it != Screen.CLOCK_BUILDER }
+        val sections = Screen.entries.filter { it != Screen.HOME && it != Screen.PERMISSIONS && it != Screen.CLOCK_BUILDER && it != Screen.DIAGNOSTICS }
         sections.chunked(2).forEachIndexed { row, pair ->
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

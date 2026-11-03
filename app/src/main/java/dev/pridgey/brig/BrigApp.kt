@@ -20,6 +20,8 @@ class BrigApp : Application() {
         Notifications.createChannels(this)
         dev.pridgey.brig.data.PhotoRotator.restore(this)
         dev.pridgey.brig.data.PackageRepo.load(this)
+        dev.pridgey.brig.data.MoodStore.load(this)
+        dev.pridgey.brig.data.DiagLog.load(this)
         if (!BuildConfig.DEBUG) UpdateWorker.schedule(this)
     }
 

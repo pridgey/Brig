@@ -12,10 +12,12 @@ Built for a Pixel 8 Pro. It should work on any Android 10+ phone.
 - **Photo sources** that rotate on a schedule: your own picks, "On this day" from your library, an Immich album, NASA's picture of the day, Bing daily, Unsplash (your key), or a subreddit
 - **Depth effect**: the photo's subject is cut out on-device (ML Kit) and drawn in front of the clock
 - Photo effects (Mono, Noir, Duotone…), Ken Burns drift, vignette and grain
+- **Album art background** while music plays, and **match the photo**: the accent color comes from your background photo or the album art
 - **Tilt parallax**, **weather effects** (rain, snow, storms, fog that match the forecast), and **adapt to surroundings** (dimmer and warmer in the dark, clearer in sunlight)
 - Accent color from your wallpaper (Material You) or a fixed color
 
 **At a glance**
+- A date line that **says what's next**: "Standup in 25 min", "Leave in 10 min for Dentist"
 - Glance chips: date, next alarm, battery, weather, air quality, UV index, pollen (Europe only), daily stats
 - **Alarm card** with countdown and Skip (asks your clock app to dismiss the next alarm)
 - **Hourly weather** with rain alerts ("Rain in 15 min")
@@ -24,6 +26,8 @@ Built for a Pixel 8 Pro. It should work on any Android 10+ phone.
 - **Sports scores** for the teams you follow (ESPN): live, final and next game
 - **Packages**: picked up from shipping notifications, or added by tracking number
 - **On this day**: photos from today's date in past years
+- **Mood check-in**: one tap a day, with a month of colored dots and a streak
+- **Word of the day**, or your own flashcards (front | back), flipped with a tap
 - Widgets can sit at the top or bottom, in any order
 
 **Notifications**
@@ -31,6 +35,7 @@ Built for a Pixel 8 Pro. It should work on any Android 10+ phone.
 - **Conversation view**: message notifications open as chat bubbles with an inline reply box
 - **Live activities**: timers, downloads, rides and navigation with live progress
 - **Glance mode**: only app icons until you tap
+- **Code card**: one-time codes shown big for 5 minutes; copying waits until you unlock
 - Hide content globally or per app; per-app Always on top, Quiet, or Block
 
 **Unlock & gestures**
@@ -41,10 +46,12 @@ Built for a Pixel 8 Pro. It should work on any Android 10+ phone.
 
 **Profiles (automation)**
 - Triggers: time window, charging, charging during a window, headphones, **daytime / night** (sunrise and sunset for your weather city, with an offset)
+- **Bedtime nudge**: a gentle note plus a dimmer, warmer screen after bedtime; Brig can suggest a bedtime from when you usually put the phone down
 - Effects: bedside mode, hide notifications or content, clock style, accent, dim, background, and a photo of its own
 
 **Setup & maintenance**
 - A **setup assistant** on first run: permissions, then a starter layout (Clean, Productive, Photo, Night owl)
+- **Diagnostics** (Permissions → "Brig not showing up?"): checks every moving part with one-tap fixes, and a log that flags screen-offs where Brig didn't open
 - Built-in updater from GitHub Releases; export, import or reset settings as JSON
 
 ## How it works

@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
@@ -357,4 +358,30 @@ internal fun loadPhoto(path: String, maxDim: Int): ImageBitmap? = runCatching {
     var sample = 1
     while (bounds.outWidth / (sample * 2) >= maxDim || bounds.outHeight / (sample * 2) >= maxDim * 2) sample *= 2
     BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+}.getOrNull()
+
+/** The playing track's artwork, blurred and slightly zoomed, crossfading as songs change. */
+@Composable
+fun AlbumArtBackground(art: ImageBitmap?, modifier: Modifier = Modifier) {
+    androidx.compose.animation.Crossfade(art, modifier.fillMaxSize(), animationSpec = tween(900), label = "albumart") { a ->
+        if (a != null) {
+            Box(Modifier.fillMaxSize().background(Color.Black)) {
+                Image(
+                    a, null,
+                    Modifier.fillMaxSize().graphicsLayer { scaleX = 1.25f; scaleY = 1.25f }.blur(48.dp),
+                    contentScale = ContentScale.Crop,
+                )
+                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.25f)))
+            }
+        }
+    }
+}
+
+/** A vivid accent from an image, or null if it's too muted. */
+internal fun accentOf(img: ImageBitmap): Long? = runCatching {
+    val src = img.asAndroidBitmap().let { if (it.config == Bitmap.Config.HARDWARE) it.copy(Bitmap.Config.ARGB_8888, false) else it }
+    val small = Bitmap.createScaledBitmap(src, 48, 48, true)
+    val px = IntArray(48 * 48)
+    small.getPixels(px, 0, 48, 0, 0, 48, 48)
+    dev.pridgey.brig.util.PhotoColor.accent(px)
 }.getOrNull()

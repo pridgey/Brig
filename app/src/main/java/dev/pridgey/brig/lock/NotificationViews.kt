@@ -100,7 +100,19 @@ internal fun NotificationsWidget(settings: BrigSettings, effects: ActiveEffects,
         Text("Grant notification access in Brig to see notifications here", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.5f))
         return
     }
-    val visible = visibleNotifications(all, rules, settings.isWidgetOn(WidgetType.LIVE))
+    var visible = visibleNotifications(all, rules, settings.isWidgetOn(WidgetType.LIVE))
+    // One-time codes get their own card for 5 minutes and leave the main list meanwhile.
+    val nowMs by produceState(System.currentTimeMillis()) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+    val codes = if (!rules.otpCard) emptyList() else visible.mapNotNull { n ->
+        if (nowMs - n.postTime > dev.pridgey.brig.data.OtpParse.LIFETIME_MS) return@mapNotNull null
+        dev.pridgey.brig.data.OtpParse.extract("${n.title} ${n.text}")?.let { n to it }
+    }.take(2)
+    if (codes.isNotEmpty()) visible = visible - codes.map { it.first }.toSet()
     val (main, quiet) = NotifPriority.arrange(visible, rules.appModes, rules.groupByApp, rules.smartPriority)
 
     var revealed by remember { mutableStateOf(!rules.glanceMode) }
@@ -141,6 +153,9 @@ internal fun NotificationsWidget(settings: BrigSettings, effects: ActiveEffects,
     }
 
     Column(Modifier.animateContentSize(spring(dampingRatio = 0.8f)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        codes.forEach { (n, code) ->
+            key("otp:" + n.key) { OtpCard(n, code, hidden(n.pkg), nowMs, controller) }
+        }
         val shown = main.take(rules.maxShown)
         shown.forEachIndexed { i, g ->
             key(g.key) {
@@ -162,6 +177,30 @@ internal fun NotificationsWidget(settings: BrigSettings, effects: ActiveEffects,
         }
         if (quiet.isNotEmpty()) {
             QuietStack(quiet, quietOpen, onToggle = { quietOpen = !quietOpen }) { g -> key(g.key) { Group(g) } }
+        }
+    }
+}
+
+/** A one-time code, big and easy to read, counting down to when it's probably expired. */
+@Composable
+private fun OtpCard(n: BrigNotification, code: String, hideContent: Boolean, nowMs: Long, controller: LockController) {
+    val left = dev.pridgey.brig.data.OtpParse.LIFETIME_MS - (nowMs - n.postTime)
+    GlassCard(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            n.appIcon?.let { Image(it, null, Modifier.size(22.dp).clip(CircleShape)) }
+            Spacer(Modifier.width(8.dp))
+            Text("Code from ${n.appLabel}", style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.8f), modifier = Modifier.weight(1f))
+            Text("expires ${clockSpan(left)}", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.6f))
+        }
+        Text(
+            if (hideContent) "••• •••" else code,
+            style = MaterialTheme.typography.displaySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, letterSpacing = androidx.compose.ui.unit.TextUnit(4f, androidx.compose.ui.unit.TextUnitType.Sp)),
+            color = Color.White,
+            modifier = Modifier.padding(vertical = 6.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilledTonalButton(onClick = { controller.copyAfterUnlock(dev.pridgey.brig.data.OtpParse.digits(code)) }) { Text("Unlock & copy") }
+            if (n.clearable) TextButton(onClick = { BrigNotificationListener.dismiss(n.key) }) { Text("Dismiss", color = Color.White) }
         }
     }
 }

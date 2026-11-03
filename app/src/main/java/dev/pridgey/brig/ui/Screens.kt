@@ -306,6 +306,7 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
         }
         item {
             SettingsGroup("Accent color") {
+                SwitchRow("Match the photo", "Takes the accent from your background photo, or the album art while music plays", a.accentFromPhoto) { v -> set { it.copy(accentFromPhoto = v) } }
                 ColorSwatches(a.accent, allowAuto = true) { c -> set { it.copy(accent = c) } }
                 Hint("Your accent color is used everywhere: clock highlights, toggles, buttons, the calendar, the photo Duotone effect, and this app. Auto follows your wallpaper (Material You). Profiles can override it.")
             }
@@ -498,6 +499,9 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
         if (needsWeather) {
             item { WeatherSettings(settings.weather) { cfg -> update { it.copy(weather = cfg) } } }
         }
+        if (settings.isWidgetOn(WidgetType.DATE)) item { DateSettings(settings.appearance, update) }
+        if (settings.isWidgetOn(WidgetType.MOOD)) item { MoodSettings() }
+        if (settings.isWidgetOn(WidgetType.FLASHCARD)) item { FlashcardSettings(settings.flashcards, update) }
         if (settings.isWidgetOn(WidgetType.HEALTH)) item { HealthSettings(settings.health, update) }
         if (settings.isWidgetOn(WidgetType.SPORTS)) item { SportsSettings(settings.sports.teams, update) }
         if (settings.isWidgetOn(WidgetType.PACKAGES)) item { PackagesSettings(settings.packages, update) }
@@ -568,6 +572,7 @@ fun NotificationsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: 
                 SwitchRow("Group by app", "Stack notifications from the same app into one card", r.groupByApp) { v -> set { it.copy(groupByApp = v) } }
                 SwitchRow("Smart priority", "People and conversations first. Promos and low-priority ones fold into a Quiet stack.", r.smartPriority) { v -> set { it.copy(smartPriority = v) } }
                 SwitchRow("Conversation view", "Message notifications open as chat bubbles with a reply box", r.conversationView) { v -> set { it.copy(conversationView = v) } }
+                SwitchRow("Code card", "One-time codes get a big card for 5 minutes. Copying waits until you unlock.", r.otpCard) { v -> set { it.copy(otpCard = v) } }
                 SwitchRow("Glance mode", "Only app icons until you tap. Folds back after 20 seconds.", r.glanceMode) { v -> set { it.copy(glanceMode = v) } }
                 SliderRow(if (r.groupByApp) "Max cards shown" else "Max shown", r.maxShown.toFloat(), 1f..8f, steps = 6, label = { it.roundToInt().toString() }) { v ->
                     set { it.copy(maxShown = v.roundToInt()) }
@@ -808,6 +813,7 @@ fun ProfilesScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () ->
     }
 
     ScreenScaffold("Profiles", onBack) {
+        item { BedtimeSettings(settings.sleep, update) }
         item { Hint("Profiles change the lock screen automatically. When several match, on/off effects combine and the top profile's overrides win.") }
         items(settings.profiles, key = { it.id }) { p ->
             val idx = settings.profiles.indexOf(p)
@@ -925,7 +931,7 @@ private fun ProfileEditor(initial: Profile, onDismiss: () -> Unit, onSave: (Prof
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TimePickDialog(initial: Int, onDismiss: () -> Unit, onPick: (Int) -> Unit) {
+internal fun TimePickDialog(initial: Int, onDismiss: () -> Unit, onPick: (Int) -> Unit) {
     val state = rememberTimePickerState(initial / 60, initial % 60, false)
     AlertDialog(
         onDismissRequest = onDismiss,
