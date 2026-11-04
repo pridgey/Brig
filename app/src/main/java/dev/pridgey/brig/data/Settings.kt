@@ -113,6 +113,8 @@ data class Appearance(
     val hideStatusBar: Boolean = false,
     /** Cut the photo's subject out and draw it over the clock. */
     val depth: Boolean = false,
+    /** Skip the depth effect on photos where the subject would hide too much of the clock. */
+    val depthKeepClock: Boolean = true,
     /** Background shifts slightly as the phone tilts. */
     val tiltParallax: Boolean = false,
     /** Rain, snow or fog drawn over the background to match the current weather. */

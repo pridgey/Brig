@@ -95,7 +95,8 @@ object Memories {
  * The lock screen reads [current]; settings never change on rotation.
  */
 object PhotoRotator {
-    data class Current(val path: String, val caption: String?)
+    /** [url] is where a downloaded photo came from, so the same picture isn't fetched twice. */
+    data class Current(val path: String, val caption: String?, val url: String? = null)
 
     val current = MutableStateFlow<Current?>(null)
     private val lock = Mutex()
@@ -108,8 +109,12 @@ object PhotoRotator {
         if (current.value != null) return
         val p = prefs(ctx)
         val path = p.getString("path", null) ?: return
-        if (File(path).exists()) current.value = Current(path, p.getString("caption", null))
+        if (File(path).exists()) current.value = Current(path, p.getString("caption", null), p.getString("url", null))
     }
+
+    /** Sources that only change once a day, whatever the rotation setting says. */
+    private fun dailyOnly(cfg: PhotoSourceConfig) =
+        cfg.source == PhotoSource.APOD || (cfg.source == PhotoSource.BING && cfg.rotation == Rotation.DAILY)
 
     /** Fetches a new photo if the rotation interval has passed (or the source changed). */
     suspend fun maybeRotate(ctx: Context, cfg: PhotoSourceConfig, force: Boolean = false) = lock.withLock {
@@ -117,17 +122,23 @@ object PhotoRotator {
         if (cfg.source == PhotoSource.SINGLE) return@withLock
         val p = prefs(ctx)
         val sourceKey = cfg.source.name + cfg.immichAlbumId + cfg.unsplashQuery + cfg.subreddit + cfg.albumPaths.size
-        val due = System.currentTimeMillis() - p.getLong("at", 0) >= cfg.rotation.minutes * 60_000L
-        if (!force && !due && p.getString("source", null) == sourceKey && current.value != null) return@withLock
+        val sameSource = p.getString("source", null) == sourceKey && current.value != null
+        val today = LocalDate.now().toString()
+        val due = if (dailyOnly(cfg)) p.getString("day", null) != today
+        else System.currentTimeMillis() - p.getLong("at", 0) >= cfg.rotation.minutes * 60_000L
+        if (!force && !due && sameSource) return@withLock
         val next = runCatching { fetch(ctx, cfg) }.getOrNull() ?: return@withLock
-        // Keep the previous file around until the new one is in place.
-        dir(ctx).listFiles()?.filter { it.absolutePath != next.path && it.absolutePath != current.value?.path }?.forEach { it.delete() }
-        current.value = next
-        p.edit().putString("path", next.path).putString("caption", next.caption).putLong("at", System.currentTimeMillis())
-            .putString("source", sourceKey).apply()
-        if (dev.pridgey.brig.BrigApp.settings.flow.value.appearance.depth) {
-            runCatching { dev.pridgey.brig.util.Segmenter.cutout(ctx, next.path) }
+        if (next.path != current.value?.path) {
+            // Make the cut-out first, so the photo and its pop-out appear together.
+            if (dev.pridgey.brig.BrigApp.settings.flow.value.appearance.depth) {
+                runCatching { dev.pridgey.brig.util.Segmenter.cutout(ctx, next.path) }
+            }
+            // Keep the previous file around until the new one is in place.
+            dir(ctx).listFiles()?.filter { it.absolutePath != next.path && it.absolutePath != current.value?.path }?.forEach { it.delete() }
+            current.value = next
         }
+        p.edit().putString("path", next.path).putString("caption", next.caption).putString("url", next.url)
+            .putLong("at", System.currentTimeMillis()).putString("day", today).putString("source", sourceKey).apply()
     }
 
     private fun newFile(ctx: Context, ext: String = "jpg") = File(dir(ctx), "photo_${System.currentTimeMillis()}.$ext")
@@ -137,14 +148,14 @@ object PhotoRotator {
         PhotoSource.ALBUM -> cfg.albumPaths.filter { File(it).exists() && it != current.value?.path }
             .ifEmpty { cfg.albumPaths.filter { File(it).exists() } }
             .randomOrNull()?.let { Current(it, null) }
-        PhotoSource.ON_THIS_DAY -> Memories.onThisDay(ctx, 40).randomOrNull()?.let { m ->
-            val f = newFile(ctx)
-            withContext(Dispatchers.IO) {
-                ctx.contentResolver.openInputStream(m.uri)?.use { input -> f.outputStream().use { input.copyTo(it) } }
+        PhotoSource.ON_THIS_DAY -> Memories.onThisDay(ctx, 40)
+            .filter { it.uri.toString() != current.value?.url }
+            .randomOrNull()?.let { m ->
+                val f = newFile(ctx)
+                withContext(Dispatchers.IO) { saveUpright(ctx, m.uri, f) }
+                val years = m.yearsAgo
+                Current(f.absolutePath, if (years == 1) "1 year ago today" else "$years years ago today", m.uri.toString())
             }
-            val years = m.yearsAgo
-            Current(f.absolutePath, if (years == 1) "1 year ago today" else "$years years ago today")
-        }
         PhotoSource.APOD -> {
             val o = json.parseToJsonElement(Http.get("https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&thumbs=true"))
             val url = if (o.str("media_type") == "image") o.str("hdurl") ?: o.str("url") else o.str("thumbnail_url")
@@ -188,10 +199,32 @@ object PhotoRotator {
     }
 
     private suspend fun download(ctx: Context, url: String, caption: String?, headers: Map<String, String> = emptyMap()): Current {
+        // Same picture as now (NASA and Bing repeat all day): keep the file, and its cut-out, as is.
+        current.value?.takeIf { it.url == url && File(it.path).exists() }?.let { return it.copy(caption = caption ?: it.caption) }
         val f = newFile(ctx)
         Http.download(url, f, headers)
-        return Current(f.absolutePath, caption)
+        return Current(f.absolutePath, caption, url)
     }
+
+    /**
+     * Saves a gallery photo the right way up (phones often store photos sideways with a rotation
+     * tag) and at a sensible size, as a JPEG. Also handles HEIC.
+     */
+    private fun saveUpright(ctx: Context, uri: Uri, out: File) {
+        val src = android.graphics.ImageDecoder.createSource(ctx.contentResolver, uri)
+        val bmp = android.graphics.ImageDecoder.decodeBitmap(src) { decoder, info, _ ->
+            val longest = maxOf(info.size.width, info.size.height)
+            if (longest > MAX_SAVE) {
+                val f = MAX_SAVE.toFloat() / longest
+                decoder.setTargetSize((info.size.width * f).toInt(), (info.size.height * f).toInt())
+            }
+            decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+        }
+        out.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }
+        bmp.recycle()
+    }
+
+    private const val MAX_SAVE = 2560
 
     data class ImmichAlbum(val id: String, val name: String, val count: Int)
 

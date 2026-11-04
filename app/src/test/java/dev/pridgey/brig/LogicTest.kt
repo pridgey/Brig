@@ -198,4 +198,33 @@ class LogicTest {
             sports.copy(priority = dev.pridgey.brig.data.WidgetPriority.HIGH).priorityOrDefault(),
         )
     }
+
+    @Test
+    fun depthFitMapsScreenToPhoto() {
+        // A 1000x2000 photo on a 500x1000 screen: plain half scale, no crop offset.
+        val (x, y) = dev.pridgey.brig.util.DepthFit.toBitmap(250f, 100f, 500f, 1000f, 1000, 2000, 1f, 0f, 0f)
+        assertEquals(500f, x, 0.01f)
+        assertEquals(200f, y, 0.01f)
+        // A square photo is cropped at the sides: the screen's left edge lands a quarter in.
+        val (cx, _) = dev.pridgey.brig.util.DepthFit.toBitmap(0f, 500f, 500f, 1000f, 1000, 1000, 1f, 0f, 0f)
+        assertEquals(250f, cx, 0.01f)
+        // 2x zoom about the center: the screen center still maps to the photo center.
+        val (zx, zy) = dev.pridgey.brig.util.DepthFit.toBitmap(250f, 500f, 500f, 1000f, 1000, 2000, 2f, 0f, 0f)
+        assertEquals(500f, zx, 0.01f)
+        assertEquals(1000f, zy, 0.01f)
+    }
+
+    @Test
+    fun depthFitCoverage() {
+        val clock = androidx.compose.ui.geometry.Rect(0f, 0f, 500f, 200f)
+        // Subject fills the top half of the photo: the clock is fully hidden.
+        val top = dev.pridgey.brig.util.DepthFit.coverage(clock, 500f, 1000f, 500, 1000, 1f, 0f, 0f, { _, y -> if (y < 500) 255 else 0 })
+        assertEquals(1f, top, 0.001f)
+        // Subject only in the bottom half: the clock is clear.
+        val bottom = dev.pridgey.brig.util.DepthFit.coverage(clock, 500f, 1000f, 500, 1000, 1f, 0f, 0f, { _, y -> if (y >= 500) 255 else 0 })
+        assertEquals(0f, bottom, 0.001f)
+        // Subject on the left half only: half the clock is hidden.
+        val left = dev.pridgey.brig.util.DepthFit.coverage(clock, 500f, 1000f, 500, 1000, 1f, 0f, 0f, { x, _ -> if (x < 250) 255 else 0 })
+        assertEquals(0.5f, left, 0.001f)
+    }
 }

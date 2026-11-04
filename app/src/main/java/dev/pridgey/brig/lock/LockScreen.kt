@@ -103,6 +103,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.unit.Constraints
@@ -165,6 +167,20 @@ import dev.pridgey.brig.data.PhotoRotator
 import dev.pridgey.brig.data.PhotoSource
 import dev.pridgey.brig.data.Sun
 import dev.pridgey.brig.data.Sleep
+
+/**
+ * The depth effect's cut-out for [photoPath]. Starts from the cache, so a cut-out that's already
+ * made shows on the first frame instead of popping in a moment later.
+ */
+@Composable
+internal fun rememberCutout(photoPath: String?, on: Boolean): String? {
+    val ctx = LocalContext.current
+    val cached = remember(photoPath, on) { if (on && photoPath != null) dev.pridgey.brig.util.Segmenter.cached(ctx, photoPath) else null }
+    val made by produceState(cached, photoPath, on) {
+        value = cached ?: if (on && photoPath != null) dev.pridgey.brig.util.Segmenter.cutout(ctx, photoPath) else null
+    }
+    return made
+}
 
 /** Background opacity for glance chips, from Appearance. */
 val LocalChipAlpha = compositionLocalOf { 0.12f }
@@ -244,11 +260,8 @@ private fun LockScreenContent(rawSettings: BrigSettings, controller: LockControl
     val tilt by rememberTilt(appearance.tiltParallax && !effects.bedside)
 
     val depthOn = appearance.depth && appearance.background == BackgroundType.IMAGE && photoPath != null && !effects.bedside && albumArt == null
-    val cutout by produceState<String?>(null, photoPath, depthOn) {
-        value = if (depthOn && photoPath != null) {
-            dev.pridgey.brig.util.Segmenter.cached(context, photoPath) ?: dev.pridgey.brig.util.Segmenter.cutout(context, photoPath)
-        } else null
-    }
+    val cutout = rememberCutout(photoPath, depthOn)
+    val clockTracker = remember { dev.pridgey.brig.util.ClockTracker() }
 
     val density = LocalDensity.current
     val threshold = with(density) { 110.dp.toPx() }
@@ -278,6 +291,7 @@ private fun LockScreenContent(rawSettings: BrigSettings, controller: LockControl
     Box(
         Modifier
             .fillMaxSize()
+            .onPlaced { clockTracker.root = it }
             .background(Color.Black)
             .pointerInput(Unit) {
                 var total = Offset.Zero
@@ -343,8 +357,8 @@ private fun LockScreenContent(rawSettings: BrigSettings, controller: LockControl
                 val cut = cutout
                 if (cut != null) {
                     // Depth: clock, then the photo's subject over it, then everything else on top.
-                    MainContent(shown, effects, now, battery, accent, clockStyle, controller, contentModifier, ContentPart.CLOCK_ONLY)
-                    DepthForeground(appearance, cut, accent, dim, backgroundModifier)
+                    MainContent(shown, effects, now, battery, accent, clockStyle, controller, contentModifier, ContentPart.CLOCK_ONLY, clockTracker)
+                    DepthForeground(appearance, cut, accent, dim, backgroundModifier, clockTracker)
                     if (appearance.weatherFx) LiveWeatherParticles(settings.weather)
                     MainContent(shown, effects, now, battery, accent, clockStyle, controller, contentModifier, ContentPart.NO_CLOCK)
                 } else {
@@ -525,6 +539,7 @@ private fun MainContent(
     controller: LockController,
     modifier: Modifier,
     part: ContentPart = ContentPart.ALL,
+    clockTracker: dev.pridgey.brig.util.ClockTracker? = null,
 ) {
     val appearance = settings.appearance
     val align = appearance.clockAlignment(clockStyle)
@@ -535,7 +550,7 @@ private fun MainContent(
         showWidgets = part != ContentPart.CLOCK_ONLY,
         header = {
             if (settings.guest.active) GuestBanner(controller, Modifier.align(align))
-            Clock(clockStyle, now, ClockSpec.from(appearance, accent), Modifier.align(align))
+            Clock(clockStyle, now, ClockSpec.from(appearance, accent), Modifier.align(align).onGloballyPositioned { clockTracker?.report(it) })
             SleepNudge(now.hour * 60 + now.minute, settings.sleep, Modifier.align(align))
             appearance.secondaryZone?.let { z -> SecondaryZone(z, now, appearance.use24h, Modifier.align(align)) }
             val caption = rotated?.caption
@@ -948,19 +963,24 @@ private fun sampleGames(now: Long) = listOf(
 @Composable
 private fun LockMockContent(settings: BrigSettings) {
     val ctx = LocalContext.current
-    val a = settings.appearance
+    // Show the photo the lock screen would: the current rotating one when a source is set.
+    val rotated by PhotoRotator.current.collectAsState()
+    val rotatedPath = rotated?.path?.takeIf { settings.photos.source != PhotoSource.SINGLE }
+    val a = settings.appearance.let { if (rotatedPath != null) it.copy(imagePath = rotatedPath) else it }
+    val cut = rememberCutout(a.imagePath, a.depth && a.background == BackgroundType.IMAGE && a.imagePath != null)
+    val clockTracker = remember { dev.pridgey.brig.util.ClockTracker() }
     val now by rememberNow(a.showSeconds)
     val accent = resolveAccent(a.accent)
     val align = a.clockAlignment()
     val nowMs = remember(now.minute) { System.currentTimeMillis() }
     val events = remember(nowMs, settings.calendar.count) { sampleEvents(nowMs).take(settings.calendar.count) }
-    Box(Modifier.fillMaxSize()) {
-        LockBackground(a, accent)
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = a.dim)))
+    @Composable
+    fun Layer(showHeader: Boolean, showWidgets: Boolean) {
         ZonedLayout(
             settings, align, Modifier.fillMaxSize(), extraTop = 44.dp, extraBottom = 24.dp,
+            showHeader = showHeader, showWidgets = showWidgets,
             header = {
-                Clock(a.clockStyle, now, ClockSpec.from(a, accent), Modifier.align(align))
+                Clock(a.clockStyle, now, ClockSpec.from(a, accent), Modifier.align(align).onGloballyPositioned { clockTracker.report(it) })
                 a.secondaryZone?.let { SecondaryZone(it, now, a.use24h, Modifier.align(align)) }
             },
             chip = { type ->
@@ -1041,5 +1061,18 @@ private fun LockMockContent(settings: BrigSettings) {
             },
             hint = { UnlockHint(settings.gestures, false, accent) },
         )
+    }
+
+    Box(Modifier.fillMaxSize().onPlaced { clockTracker.root = it }) {
+        LockBackground(a, accent)
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = a.dim)))
+        if (cut != null) {
+            // Depth: clock, then the subject, then the widgets, like the real lock screen.
+            Layer(showHeader = true, showWidgets = false)
+            DepthForeground(a, cut, accent, a.dim, clock = clockTracker)
+            Layer(showHeader = false, showWidgets = true)
+        } else {
+            Layer(showHeader = true, showWidgets = true)
+        }
     }
 }

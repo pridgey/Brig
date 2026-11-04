@@ -245,6 +245,13 @@ fun LiveEffectsSettings(a: Appearance, set: ((Appearance) -> Appearance) -> Unit
                     depthStatus = if (cut != null) "Subject found. It's drawn over the clock." else "Couldn't find a clear subject in this photo"
                 }
             }
+            if (a.depth) {
+                SwitchRow(
+                    "Keep the clock clear",
+                    "Skip the effect on photos where the subject would hide most of the clock",
+                    a.depthKeepClock,
+                ) { v -> set { it.copy(depthKeepClock = v) } }
+            }
         }
         SwitchRow("Album art background", "While music plays, the background becomes the blurred album art", a.albumArtBackground) { v ->
             set { it.copy(albumArtBackground = v) }

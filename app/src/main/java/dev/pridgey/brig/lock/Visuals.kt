@@ -58,6 +58,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -181,7 +183,14 @@ private fun Modifier.photoTransform(cfg: PhotoConfig, kb: Float) = graphicsLayer
  * onto the cutout only, so it matches the background underneath.
  */
 @Composable
-fun DepthForeground(appearance: Appearance, cutoutPath: String, accent: Color, dim: Float, modifier: Modifier = Modifier) {
+fun DepthForeground(
+    appearance: Appearance,
+    cutoutPath: String,
+    accent: Color,
+    dim: Float,
+    modifier: Modifier = Modifier,
+    clock: dev.pridgey.brig.util.ClockTracker? = null,
+) {
     val cfg = appearance.photo
     val bmp by produceState<ImageBitmap?>(null, cutoutPath) {
         value = withContext(Dispatchers.IO) { loadPhoto(cutoutPath, 1440) }
@@ -189,30 +198,51 @@ fun DepthForeground(appearance: Appearance, cutoutPath: String, accent: Color, d
     val matrix = remember(cfg.effect, cfg.brightness, cfg.contrast, cfg.saturation, accent) { ColorMatrix(PhotoFx.matrix(cfg, accent)) }
     val kb = rememberKenBurns(cfg.kenBurns)
     val img = bmp ?: return
-    Box(modifier.fillMaxSize().clipToBounds()) {
-        Image(
-            img, null,
-            Modifier
-                .fillMaxSize()
-                .photoTransform(cfg, kb)
-                .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
-                .drawWithContent {
-                    drawContent()
-                    val atop = BlendMode.SrcAtop
-                    if (cfg.scrim > 0f) {
-                        drawRect(
-                            Brush.verticalGradient(
-                                0f to Color.Black.copy(alpha = 0.65f * cfg.scrim), 0.35f to Color.Transparent,
-                                0.6f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.8f * cfg.scrim),
-                            ),
-                            blendMode = atop,
-                        )
-                    }
-                    if (dim > 0f) drawRect(Color.Black.copy(alpha = dim), blendMode = atop)
-                },
-            contentScale = ContentScale.Crop,
-            colorFilter = ColorFilter.colorMatrix(matrix),
-        )
+    // Skip the pop-out for this photo when the subject would hide too much of the clock.
+    var layerSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    val clockBounds = clock?.bounds
+    val keepClock = appearance.depthKeepClock && clock != null
+    val show = remember(img, clockBounds, layerSize, keepClock, cfg.zoom, cfg.panX, cfg.panY) {
+        when {
+            !keepClock -> true
+            clockBounds == null || layerSize.width == 0 -> false // Not measured yet: wait rather than flash.
+            else -> {
+                val a = img.asAndroidBitmap()
+                dev.pridgey.brig.util.DepthFit.coverage(
+                    clockBounds, layerSize.width.toFloat(), layerSize.height.toFloat(), a.width, a.height,
+                    cfg.zoom, cfg.panX, cfg.panY, alphaAt = { x, y -> android.graphics.Color.alpha(a.getPixel(x, y)) },
+                ) <= dev.pridgey.brig.util.DepthFit.MAX_COVERAGE
+            }
+        }
+    }
+    Box(
+        modifier
+            .fillMaxSize()
+            .onSizeChanged { layerSize = it }
+            .clipToBounds()
+            .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+            .drawWithContent {
+                drawContent()
+                // The same overlays as the background, in screen space so they line up with it...
+                drawPhotoOverlays(cfg)
+                if (dim > 0f) drawRect(Color.Black.copy(alpha = dim))
+                // ...then trimmed back to the subject's shape.
+                drawContext.canvas.saveLayer(
+                    androidx.compose.ui.geometry.Rect(Offset.Zero, size),
+                    androidx.compose.ui.graphics.Paint().apply { blendMode = BlendMode.DstIn },
+                )
+                drawContent()
+                drawContext.canvas.restore()
+            },
+    ) {
+        if (show) {
+            Image(
+                img, null,
+                Modifier.fillMaxSize().photoTransform(cfg, kb),
+                contentScale = ContentScale.Crop,
+                colorFilter = ColorFilter.colorMatrix(matrix),
+            )
+        }
     }
 }
 
@@ -309,60 +339,58 @@ private fun PhotoBackground(path: String?, blur: Float, cfg: PhotoConfig, accent
                 colorFilter = ColorFilter.colorMatrix(matrix),
             )
         }
-        if (cfg.vignette > 0f) {
-            Box(
-                Modifier.fillMaxSize().drawBehind {
-                    // An ellipse shaped to the screen, so the sides darken as much as the top and
-                    // bottom, reaching full strength right at the corners. Drawn as a circle on a
-                    // square, then squashed to the screen's width.
-                    val h = size.height
-                    val v = cfg.vignette
-                    scale(scaleX = size.width / h, scaleY = 1f, pivot = center) {
-                        drawRect(
-                            Brush.radialGradient(
-                                0.35f to Color.Transparent,
-                                0.6f to Color.Black.copy(alpha = 0.35f * v),
-                                0.8f to Color.Black.copy(alpha = 0.7f * v),
-                                1f to Color.Black.copy(alpha = v),
-                                center = center, radius = h / 2f * 1.4143f,
-                            ),
-                            topLeft = Offset(center.x - h / 2f, 0f),
-                            size = androidx.compose.ui.geometry.Size(h, h),
-                        )
-                    }
-                },
-            )
-        }
-        if (cfg.grain > 0f) Grain(cfg.grain)
-        if (cfg.scrim > 0f) {
-            Box(
-                Modifier.fillMaxSize().background(
-                    Brush.verticalGradient(
-                        0f to Color.Black.copy(alpha = 0.65f * cfg.scrim),
-                        0.35f to Color.Transparent,
-                        0.6f to Color.Transparent,
-                        1f to Color.Black.copy(alpha = 0.8f * cfg.scrim),
-                    ),
+        Box(Modifier.fillMaxSize().drawBehind { drawPhotoOverlays(cfg) })
+    }
+}
+
+/**
+ * Vignette, film grain and the readability fade, in that order. Shared by the background and the
+ * depth effect's cut-out subject so both get exactly the same treatment.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPhotoOverlays(cfg: PhotoConfig) {
+    if (cfg.vignette > 0f) {
+        // An ellipse shaped to the screen, so the sides darken as much as the top and bottom,
+        // reaching full strength right at the corners. Drawn as a circle on a square, then
+        // squashed to the screen's width.
+        val h = size.height
+        val v = cfg.vignette
+        scale(scaleX = size.width / h, scaleY = 1f, pivot = center) {
+            drawRect(
+                Brush.radialGradient(
+                    0.35f to Color.Transparent,
+                    0.6f to Color.Black.copy(alpha = 0.35f * v),
+                    0.8f to Color.Black.copy(alpha = 0.7f * v),
+                    1f to Color.Black.copy(alpha = v),
+                    center = center, radius = h / 2f * 1.4143f,
                 ),
+                topLeft = Offset(center.x - h / 2f, 0f),
+                size = androidx.compose.ui.geometry.Size(h, h),
             )
         }
+    }
+    if (cfg.grain > 0f) drawRect(grainBrush, alpha = cfg.grain * 0.45f, blendMode = BlendMode.Overlay)
+    if (cfg.scrim > 0f) {
+        drawRect(
+            Brush.verticalGradient(
+                0f to Color.Black.copy(alpha = 0.65f * cfg.scrim),
+                0.35f to Color.Transparent,
+                0.6f to Color.Transparent,
+                1f to Color.Black.copy(alpha = 0.8f * cfg.scrim),
+            ),
+        )
     }
 }
 
 /** Tiled film-grain noise. */
-@Composable
-private fun Grain(amount: Float) {
-    val brush = remember {
-        val n = 160
-        val rnd = Random(3)
-        val pixels = IntArray(n * n) {
-            val v = rnd.nextInt(256)
-            android.graphics.Color.argb(255, v, v, v)
-        }
-        val bmp = Bitmap.createBitmap(pixels, n, n, Bitmap.Config.ARGB_8888)
-        ShaderBrush(ImageShader(bmp.asImageBitmap(), TileMode.Repeated, TileMode.Repeated))
+private val grainBrush: ShaderBrush by lazy {
+    val n = 160
+    val rnd = Random(3)
+    val pixels = IntArray(n * n) {
+        val v = rnd.nextInt(256)
+        android.graphics.Color.argb(255, v, v, v)
     }
-    Box(Modifier.fillMaxSize().drawBehind { drawRect(brush, alpha = amount * 0.45f, blendMode = BlendMode.Overlay) })
+    val bmp = Bitmap.createBitmap(pixels, n, n, Bitmap.Config.ARGB_8888)
+    ShaderBrush(ImageShader(bmp.asImageBitmap(), TileMode.Repeated, TileMode.Repeated))
 }
 
 internal fun loadPhoto(path: String, maxDim: Int): ImageBitmap? = runCatching {
