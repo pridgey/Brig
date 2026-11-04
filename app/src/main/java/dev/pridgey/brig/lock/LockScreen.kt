@@ -103,6 +103,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.Placeable
+import androidx.compose.ui.unit.Constraints
+import dev.pridgey.brig.data.WidgetPriority
+import dev.pridgey.brig.data.spaceOrder
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -379,9 +384,21 @@ private fun groupWidgets(types: List<WidgetType>): List<WidgetGroup> {
     return out
 }
 
+/** One widget (or row of chips) in the layout, with what it needs to compete for space. */
+private class ZoneItem(
+    val group: WidgetGroup,
+    val bottom: Boolean,
+    val priority: WidgetPriority,
+    /** May shrink to fit what's left instead of hiding (the notification list in the top zone). */
+    val flexible: Boolean,
+)
+
 /**
  * The two-zone lock screen layout shared by the real lock screen and the settings preview.
  * Top-zone widgets stack under the clock; bottom-zone widgets stack above the unlock hint.
+ *
+ * Both zones share the space between the clock and the hint. When it runs out, widgets get space
+ * by priority (then list position), and anything that doesn't fit is hidden whole rather than cut off.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -398,53 +415,101 @@ private fun ZonedLayout(
     single: @Composable ColumnScope.(type: WidgetType, inBottom: Boolean) -> Unit,
     hint: @Composable () -> Unit,
 ) {
-    val density = LocalDensity.current
     val layout = settings.appearance.layout
-    var bottomHeight by remember { mutableIntStateOf(0) }
     val enabled = if (showWidgets) settings.widgetOrder().filter { it.enabled } else emptyList()
-    val topTypes = enabled.filter { it.zoneOrDefault() == WidgetZone.TOP }.map { it.type }
-    val bottomTypes = enabled.filter { it.zoneOrDefault() == WidgetZone.BOTTOM }.map { it.type }
+    val configs = enabled.associateBy { it.type }
 
-    @Composable
-    fun ColumnScope.groups(types: List<WidgetType>, groupAlign: Alignment.Horizontal, inBottom: Boolean) {
-        groupWidgets(types).forEach { group ->
-            when (group) {
-                is WidgetGroup.Chips -> FlowRow(
-                    Modifier.align(groupAlign),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) { group.types.forEach { chip(it) } }
-                is WidgetGroup.Single -> single(group.type, inBottom)
+    fun items(zone: WidgetZone): List<ZoneItem> {
+        val bottom = zone == WidgetZone.BOTTOM
+        return groupWidgets(enabled.filter { it.zoneOrDefault() == zone }.map { it.type }).map { g ->
+            val types = when (g) {
+                is WidgetGroup.Chips -> g.types
+                is WidgetGroup.Single -> listOf(g.type)
+            }
+            ZoneItem(
+                group = g,
+                bottom = bottom,
+                priority = types.minOf { configs.getValue(it).priorityOrDefault() },
+                flexible = !bottom && g == WidgetGroup.Single(WidgetType.NOTIFICATIONS),
+            )
+        }
+    }
+    val all = items(WidgetZone.TOP) + items(WidgetZone.BOTTOM)
+    val order = remember(all.map { it.priority }) { spaceOrder(all.map { it.priority }) }
+
+    val headerContent: @Composable () -> Unit = {
+        // The header keeps its space when hidden so the widgets below don't move.
+        Column(
+            Modifier.fillMaxWidth().graphicsLayer { alpha = if (showHeader) 1f else 0f },
+            verticalArrangement = Arrangement.spacedBy(layout.spacing.dp),
+            content = header,
+        )
+    }
+    val itemContents: List<@Composable () -> Unit> = all.map { item ->
+        {
+            val groupAlign = if (item.bottom) Alignment.CenterHorizontally else align
+            Column(Modifier.fillMaxWidth()) {
+                when (val g = item.group) {
+                    is WidgetGroup.Chips -> FlowRow(
+                        Modifier.align(groupAlign),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) { g.types.forEach { chip(it) } }
+                    is WidgetGroup.Single -> single(g.type, item.bottom)
+                }
             }
         }
     }
+    val hintContent: @Composable () -> Unit = { if (showWidgets) hint() }
 
-    Box(modifier.padding(horizontal = layout.side.dp)) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(top = extraTop + layout.top.dp, bottom = with(density) { bottomHeight.toDp() } + 8.dp),
-            verticalArrangement = Arrangement.spacedBy(layout.spacing.dp),
-        ) {
-            // The header keeps its space when hidden so the widgets below don't move.
-            Column(
-                Modifier.fillMaxWidth().graphicsLayer { alpha = if (showHeader) 1f else 0f },
-                verticalArrangement = Arrangement.spacedBy(layout.spacing.dp),
-                content = header,
-            )
-            groups(topTypes, align, inBottom = false)
+    Layout(
+        contents = listOf(headerContent, hintContent) + itemContents,
+        modifier = modifier.fillMaxSize().padding(horizontal = layout.side.dp),
+    ) { measurables, constraints ->
+        val w = constraints.maxWidth
+        val h = constraints.maxHeight
+        val loose = Constraints(maxWidth = w)
+        val headerP = measurables[0].firstOrNull()?.measure(loose.copy(maxHeight = h))
+        val hintP = measurables[1].firstOrNull()?.measure(loose.copy(maxHeight = h))
+        val topPad = (extraTop + layout.top.dp).roundToPx()
+        val bottomPad = (extraBottom + layout.bottom.dp).roundToPx()
+        val topGap = layout.spacing.dp.roundToPx()
+        val bottomGap = maxOf(layout.spacing, 12).dp.roundToPx()
+        val headerH = headerP?.height ?: 0
+        val hintH = hintP?.height ?: 0
+
+        // Space for widgets: between the header and the hint, with a small gap between the zones.
+        var remaining = h - topPad - headerH - bottomPad - hintH - 8.dp.roundToPx()
+        val minFlexible = 48.dp.roundToPx()
+        val placed = arrayOfNulls<Placeable>(all.size)
+        for (i in order) {
+            val item = all[i]
+            val m = measurables[i + 2].firstOrNull() ?: continue
+            val gap = if (item.bottom) bottomGap else topGap
+            val room = remaining - gap
+            if (item.flexible) {
+                if (room < minFlexible) continue
+                val p = m.measure(loose.copy(maxHeight = room))
+                if (p.height > 0) { placed[i] = p; remaining -= p.height + gap }
+            } else {
+                val p = m.measure(loose.copy(maxHeight = h))
+                if (p.height == 0) continue
+                if (p.height <= room) { placed[i] = p; remaining -= p.height + gap }
+            }
         }
-        Column(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .onSizeChanged { bottomHeight = it.height }
-                .padding(bottom = extraBottom + layout.bottom.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(maxOf(layout.spacing, 12).dp),
-        ) {
-            groups(bottomTypes, Alignment.CenterHorizontally, inBottom = true)
-            if (showWidgets) hint()
+
+        layout(w, h) {
+            var y = topPad
+            headerP?.placeRelative(0, y)
+            y += headerH
+            all.indices.filter { !all[it].bottom }.forEach { i ->
+                placed[i]?.let { y += topGap; it.placeRelative(0, y); y += it.height }
+            }
+            val shownBottom = all.indices.filter { all[it].bottom }.mapNotNull { placed[it] }
+            val hintTop = h - bottomPad - hintH
+            var by = hintTop - shownBottom.sumOf { it.height + bottomGap }
+            shownBottom.forEach { it.placeRelative(0, by); by += it.height + bottomGap }
+            hintP?.placeRelative((w - hintP.width) / 2, hintTop)
         }
     }
 }

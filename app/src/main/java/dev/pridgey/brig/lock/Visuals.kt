@@ -58,6 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
@@ -311,12 +312,24 @@ private fun PhotoBackground(path: String?, blur: Float, cfg: PhotoConfig, accent
         if (cfg.vignette > 0f) {
             Box(
                 Modifier.fillMaxSize().drawBehind {
-                    drawRect(
-                        Brush.radialGradient(
-                            0.45f to Color.Transparent, 1f to Color.Black.copy(alpha = cfg.vignette),
-                            center = center, radius = size.maxDimension * 0.72f,
-                        ),
-                    )
+                    // An ellipse shaped to the screen, so the sides darken as much as the top and
+                    // bottom, reaching full strength right at the corners. Drawn as a circle on a
+                    // square, then squashed to the screen's width.
+                    val h = size.height
+                    val v = cfg.vignette
+                    scale(scaleX = size.width / h, scaleY = 1f, pivot = center) {
+                        drawRect(
+                            Brush.radialGradient(
+                                0.35f to Color.Transparent,
+                                0.6f to Color.Black.copy(alpha = 0.35f * v),
+                                0.8f to Color.Black.copy(alpha = 0.7f * v),
+                                1f to Color.Black.copy(alpha = v),
+                                center = center, radius = h / 2f * 1.4143f,
+                            ),
+                            topLeft = Offset(center.x - h / 2f, 0f),
+                            size = androidx.compose.ui.geometry.Size(h, h),
+                        )
+                    }
                 },
             )
         }

@@ -386,8 +386,9 @@ internal fun LiveMemories(controller: LockController) {
     val ctx = LocalContext.current
     val data by produceState<Pair<List<Memory>, List<ImageBitmap>>?>(null) {
         value = withContext(Dispatchers.IO) {
-            val m = Memories.onThisDay(ctx, 3)
-            m to m.mapNotNull { Memories.thumbnail(ctx, it) }
+            // Ask for extras in case some thumbnails fail to load, and keep each photo with its thumbnail.
+            val loaded = Memories.onThisDay(ctx, 6).mapNotNull { m -> Memories.thumbnail(ctx, m)?.let { m to it } }.take(3)
+            loaded.map { it.first } to loaded.map { it.second }
         }
     }
     val (memories, thumbs) = data ?: return

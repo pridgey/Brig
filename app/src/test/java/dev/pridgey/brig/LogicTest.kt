@@ -174,4 +174,28 @@ class LogicTest {
         val moved = w[0].copy(zone = dev.pridgey.brig.data.WidgetZone.BOTTOM)
         assertEquals(dev.pridgey.brig.data.WidgetZone.BOTTOM, moved.zoneOrDefault())
     }
+
+    @Test
+    fun spaceGoesToHigherPriorityThenListOrder() {
+        // Sports (low) sits above media (high) in the list, but media still gets space first.
+        val order = dev.pridgey.brig.data.spaceOrder(
+            listOf(
+                dev.pridgey.brig.data.WidgetPriority.LOW, dev.pridgey.brig.data.WidgetPriority.NORMAL,
+                dev.pridgey.brig.data.WidgetPriority.HIGH, dev.pridgey.brig.data.WidgetPriority.NORMAL,
+            ),
+        )
+        assertEquals(listOf(2, 1, 3, 0), order)
+    }
+
+    @Test
+    fun widgetPriorityDefaultsAndOverrides() {
+        val media = dev.pridgey.brig.data.WidgetConfig(dev.pridgey.brig.data.WidgetType.MEDIA, true)
+        assertEquals(dev.pridgey.brig.data.WidgetPriority.HIGH, media.priorityOrDefault())
+        val sports = dev.pridgey.brig.data.WidgetConfig(dev.pridgey.brig.data.WidgetType.SPORTS, true)
+        assertEquals(dev.pridgey.brig.data.WidgetPriority.LOW, sports.priorityOrDefault())
+        assertEquals(
+            dev.pridgey.brig.data.WidgetPriority.HIGH,
+            sports.copy(priority = dev.pridgey.brig.data.WidgetPriority.HIGH).priorityOrDefault(),
+        )
+    }
 }

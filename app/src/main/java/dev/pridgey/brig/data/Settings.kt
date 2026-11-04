@@ -358,30 +358,42 @@ enum class WidgetZone(val label: String) {
     BOTTOM("Bottom"),
 }
 
-enum class WidgetType(val label: String, val defaultOn: Boolean, val defaultZone: WidgetZone = WidgetZone.TOP) {
-    DATE("Date", true),
+/** Who gets the space first when the widgets don't all fit. */
+enum class WidgetPriority(val label: String) {
+    HIGH("High"),
+    NORMAL("Normal"),
+    LOW("Low"),
+}
+
+enum class WidgetType(
+    val label: String,
+    val defaultOn: Boolean,
+    val defaultZone: WidgetZone = WidgetZone.TOP,
+    val defaultPriority: WidgetPriority = WidgetPriority.NORMAL,
+) {
+    DATE("Date", true, defaultPriority = WidgetPriority.HIGH),
     ALARM("Next alarm", true),
     BATTERY("Battery", true),
     WEATHER("Weather", false),
     STATS("Daily stats", false),
     CALENDAR("Calendar", false),
-    MEDIA("Media controls", true),
-    NOTIFICATIONS("Notifications", true),
-    QUOTE("Quote of the day", false),
+    MEDIA("Media controls", true, defaultPriority = WidgetPriority.HIGH),
+    NOTIFICATIONS("Notifications", true, defaultPriority = WidgetPriority.HIGH),
+    QUOTE("Quote of the day", false, defaultPriority = WidgetPriority.LOW),
     SHORTCUTS("App shortcuts", true, WidgetZone.BOTTOM),
     TOGGLES("Quick toggles", true, WidgetZone.BOTTOM),
-    LIVE("Live activities", true),
-    ALARM_CARD("Alarm card", false),
+    LIVE("Live activities", true, defaultPriority = WidgetPriority.HIGH),
+    ALARM_CARD("Alarm card", false, defaultPriority = WidgetPriority.HIGH),
     HOURLY("Hourly weather", false),
     AIR("Air quality", false),
     UV("UV index", false),
     POLLEN("Pollen", false),
     HEALTH("Steps & activity", false),
-    SPORTS("Sports scores", false),
+    SPORTS("Sports scores", false, defaultPriority = WidgetPriority.LOW),
     PACKAGES("Packages", false),
-    MEMORIES("On this day", false),
+    MEMORIES("On this day", false, defaultPriority = WidgetPriority.LOW),
     MOOD("Mood check-in", false),
-    FLASHCARD("Word of the day", false),
+    FLASHCARD("Word of the day", false, defaultPriority = WidgetPriority.LOW),
 }
 
 @Serializable
@@ -390,9 +402,19 @@ data class WidgetConfig(
     val enabled: Boolean,
     /** Null means the widget's default zone (older saved settings have no zone). */
     val zone: WidgetZone? = null,
+    /** Null means the widget's default priority. */
+    val priority: WidgetPriority? = null,
 ) {
     fun zoneOrDefault() = zone ?: type.defaultZone
+    fun priorityOrDefault() = priority ?: type.defaultPriority
 }
+
+/**
+ * The order widgets get space in when they don't all fit: higher priority first, then whichever
+ * is higher in the list. Returns indices into [priorities].
+ */
+fun spaceOrder(priorities: List<WidgetPriority>): List<Int> =
+    priorities.indices.sortedWith(compareBy({ priorities[it].ordinal }, { it }))
 
 enum class AppNotificationMode(val label: String) {
     SHOW("Show"),

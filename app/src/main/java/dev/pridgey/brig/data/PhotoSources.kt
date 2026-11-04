@@ -63,9 +63,28 @@ object Memories {
                 }
             }
         }
-        val exact = all.filter { matchesDay(Instant.ofEpochMilli(it.taken).atZone(zone).toLocalDate(), today) }
-        (exact.ifEmpty { all }).sortedBy { it.taken }.take(limit)
+        pick(all, { it.taken }, today, zone, limit)
     }
+
+    /**
+     * Exact-date photos first (oldest first), then nearby days (closest first) to fill up to [limit].
+     * Skips shots taken within a couple of minutes of one already picked, so a burst counts once.
+     */
+    fun <T> pick(all: List<T>, taken: (T) -> Long, today: LocalDate, zone: ZoneId, limit: Int): List<T> {
+        fun distance(m: T) = runCatching {
+            val day = Instant.ofEpochMilli(taken(m)).atZone(zone).toLocalDate()
+            kotlin.math.abs(day.withYear(today.year).toEpochDay() - today.toEpochDay())
+        }.getOrDefault(Long.MAX_VALUE)
+        val ranked = all.sortedWith(compareBy({ distance(it) }, { taken(it) }))
+        val out = mutableListOf<T>()
+        for (m in ranked) {
+            if (out.size >= limit) break
+            if (out.none { kotlin.math.abs(taken(it) - taken(m)) < BURST_MS }) out += m
+        }
+        return out
+    }
+
+    private const val BURST_MS = 2 * 60_000L
 
     fun thumbnail(ctx: Context, m: Memory, px: Int = 360): ImageBitmap? =
         runCatching { ctx.contentResolver.loadThumbnail(m.uri, Size(px, px), null).asImageBitmap() }.getOrNull()

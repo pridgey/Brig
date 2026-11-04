@@ -31,7 +31,10 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import dev.pridgey.brig.BrigApp
 import dev.pridgey.brig.data.BrigSettings
 import dev.pridgey.brig.data.GestureAction
@@ -39,6 +42,7 @@ import dev.pridgey.brig.data.Stats
 import dev.pridgey.brig.data.UnlockMethod
 import dev.pridgey.brig.service.BrigAccessibilityService
 import dev.pridgey.brig.service.BrigNotification
+import dev.pridgey.brig.service.BrigNotificationListener
 import dev.pridgey.brig.ui.BrigTheme
 import dev.pridgey.brig.util.Device
 import dev.pridgey.brig.util.Notifications
@@ -81,6 +85,8 @@ class LockActivity : ComponentActivity() {
             this, userPresent, IntentFilter(Intent.ACTION_USER_PRESENT), ContextCompat.RECEIVER_NOT_EXPORTED,
         )
 
+        watchIncomingCalls()
+
         setContent {
             val settings by BrigApp.settings.flow.collectAsStateWithLifecycle()
             controller.settings = settings
@@ -98,6 +104,26 @@ class LockActivity : ComponentActivity() {
         super.onNewIntent(intent)
         controller.reset()
         rotatePhoto()
+    }
+
+    /**
+     * With the display on, Android sees Brig as an app in use and only shows a heads-up for a
+     * ringing call instead of the dialer's call screen. Open that call screen ourselves, once per call.
+     */
+    private fun watchIncomingCalls() {
+        val handled = mutableSetOf<String>()
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                BrigNotificationListener.notifications.collect { list ->
+                    val ringing = list.filter { it.isIncomingCall }
+                    handled.retainAll(ringing.map { it.key }.toSet())
+                    ringing.firstOrNull { it.key !in handled }?.let {
+                        handled += it.key
+                        controller.openCall(it)
+                    }
+                }
+            }
+        }
     }
 
     private fun rotatePhoto() {
@@ -222,7 +248,14 @@ class LockController(private val activity: ComponentActivity) {
         Device.cycleRinger(activity)
     }
 
-    fun openNotification(n: BrigNotification) = requestUnlock { n.contentIntent?.let(::send) }
+    fun openNotification(n: BrigNotification) {
+        if (n.isCall) openCall(n) else requestUnlock { n.contentIntent?.let(::send) }
+    }
+
+    /** The dialer's call screen shows over the keyguard, so calls never need an unlock. */
+    fun openCall(n: BrigNotification) {
+        (n.fullScreenIntent ?: n.contentIntent)?.let(::send)
+    }
 
     private fun send(pi: PendingIntent) {
         val options = if (Build.VERSION.SDK_INT >= 34) {

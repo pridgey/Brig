@@ -55,7 +55,12 @@ data class BrigNotification(
     val isGroupChat: Boolean = false,
     val live: LiveInfo? = null,
     val ongoing: Boolean = false,
-)
+    val fullScreenIntent: PendingIntent? = null,
+) {
+    /** A ringing call: the dialer attaches a full-screen intent only while the phone is ringing. */
+    val isIncomingCall get() = category == Notification.CATEGORY_CALL && fullScreenIntent != null
+    val isCall get() = category == Notification.CATEGORY_CALL
+}
 
 /** Notifications from one app, newest first. */
 data class NotificationGroup(val pkg: String, val items: List<BrigNotification>) {
@@ -222,6 +227,7 @@ class BrigNotificationListener : NotificationListenerService() {
             isGroupChat = group,
             live = live,
             ongoing = sbn.isOngoing,
+            fullScreenIntent = n.fullScreenIntent,
         )
     }
 

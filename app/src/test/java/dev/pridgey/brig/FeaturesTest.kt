@@ -297,4 +297,18 @@ class FeaturesTest {
         assertEquals(ClockShare.templates[2], back.appearance.customClock)
         assertEquals(CustomClock.starter().layers.size, dev.pridgey.brig.data.BrigSettings().appearance.customClock.layers.size)
     }
+
+    @Test
+    fun onThisDayFillsFromNearbyDaysAndSkipsBursts() {
+        val zone = java.time.ZoneOffset.UTC
+        val today = LocalDate.of(2026, 11, 3)
+        fun at(y: Int, m: Int, d: Int, minute: Int = 0) =
+            java.time.LocalDateTime.of(y, m, d, 12, minute).toInstant(zone).toEpochMilli()
+        val exact = at(2023, 11, 3)
+        val burst = at(2023, 11, 3, minute = 1)
+        val near = at(2022, 11, 4)
+        val far = at(2021, 11, 6)
+        val picked = Memories.pick(listOf(far, near, burst, exact), { it }, today, zone, 3)
+        assertEquals(listOf(exact, near, far), picked)
+    }
 }

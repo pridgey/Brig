@@ -383,6 +383,25 @@ private fun Hint(text: String) {
 
 // ---------------------------------------------------------------- Widgets
 
+/** A compact "Priority: Normal" control that opens a menu. */
+@Composable
+private fun PriorityPicker(value: dev.pridgey.brig.data.WidgetPriority, onPick: (dev.pridgey.brig.data.WidgetPriority) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Text(
+            "Priority: ${value.label} ▾",
+            color = MaterialTheme.colorScheme.primary,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.clip(CircleShape).clickable { open = true }.padding(vertical = 4.dp),
+        )
+        androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            dev.pridgey.brig.data.WidgetPriority.entries.forEach { p ->
+                androidx.compose.material3.DropdownMenuItem(text = { Text(p.label) }, onClick = { open = false; onPick(p) })
+            }
+        }
+    }
+}
+
 @Composable
 fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> Unit) {
     val order = settings.widgetOrder()
@@ -406,11 +425,19 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                         val w = order[i]
                         ListItem(
                             headlineContent = { Text(w.type.label, style = MaterialTheme.typography.titleMedium) },
-                            supportingContent = when (w.type) {
-                                WidgetType.ALARM, WidgetType.BATTERY, WidgetType.WEATHER, WidgetType.STATS,
-                                WidgetType.AIR, WidgetType.UV, WidgetType.POLLEN -> { { Text("Glance chip") } }
-                                WidgetType.LIVE -> { { Text("Timers, downloads, rides, navigation") } }
-                                else -> null
+                            supportingContent = {
+                                val about = when (w.type) {
+                                    WidgetType.ALARM, WidgetType.BATTERY, WidgetType.WEATHER, WidgetType.STATS,
+                                    WidgetType.AIR, WidgetType.UV, WidgetType.POLLEN -> "Glance chip"
+                                    WidgetType.LIVE -> "Timers, downloads, rides, navigation"
+                                    else -> null
+                                }
+                                Column {
+                                    about?.let { Text(it) }
+                                    if (w.enabled) PriorityPicker(w.priorityOrDefault()) { p ->
+                                        setWidgets(order.map { if (it.type == w.type) it.copy(priority = p) else it })
+                                    }
+                                }
                             },
                             leadingContent = {
                                 Column {
@@ -447,6 +474,9 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                     }
                 }
             }
+        }
+        item {
+            Hint("When the screen fills up, widgets get space by priority, then by their place in the list. Anything that doesn't fit is hidden until there's room, like when music stops playing.")
         }
         item {
             val op = settings.appearance.chipOpacity
