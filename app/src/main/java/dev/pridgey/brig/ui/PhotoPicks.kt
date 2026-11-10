@@ -113,6 +113,22 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.pridgey.brig.BrigApp
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.isSpecified
+import dev.pridgey.brig.lock.BACKGROUND_OVERSCAN
+import dev.pridgey.brig.lock.LocalLookOverride
+import dev.pridgey.brig.lock.LockActivity
+import dev.pridgey.brig.lock.LookOverride
+import dev.pridgey.brig.util.Framing
+import dev.pridgey.brig.util.Segmenter
 import dev.pridgey.brig.data.BackgroundType
 import dev.pridgey.brig.data.BrigSettings
 import dev.pridgey.brig.data.PhotoEffect
@@ -218,7 +234,12 @@ fun AlbumPicks(settings: BrigSettings, update: SettingsUpdate, onAdd: () -> Unit
 
     fun commit(r: Removal) {
         val keep = BrigApp.settings.flow.value.photos.albumPaths.toSet()
-        BrigApp.instance.appScope.launch(Dispatchers.IO) { r.removed.filter { it !in keep }.forEach { File(it).delete() } }
+        BrigApp.instance.appScope.launch(Dispatchers.IO) {
+            r.removed.filter { it !in keep }.forEach {
+                Segmenter.forgetGuided(ctx, it)
+                File(it).delete()
+            }
+        }
     }
 
     fun remove(gone: Collection<String>) {
@@ -400,6 +421,7 @@ fun AlbumPicks(settings: BrigSettings, update: SettingsUpdate, onAdd: () -> Unit
                 Toast.makeText(ctx, "Showing on the lock screen", Toast.LENGTH_SHORT).show()
             },
             onRemove = { remove(listOf(it)) },
+            onEnableDepth = { update { it.copy(appearance = it.appearance.copy(depth = true)) } },
             undoBar = undoBar,
             onDismiss = { editing = null; selection = null },
         )
@@ -514,9 +536,10 @@ private fun PickTile(
 // ---------------------------------------------------------------- Editor
 
 /**
- * Full-screen editor for one or more picked photos. Swipe the preview to move between photos,
- * pinch it to zoom and drag with two fingers to frame. When opened from a selection, changes
- * apply to every selected photo unless "Change all" is turned off.
+ * Full-screen editor for one or more picked photos. Swipe the preview to move between photos;
+ * pinch to zoom and drag to frame (once zoomed in, one finger moves the photo and swiping pauses);
+ * double-tap to zoom in or reset. When opened from a selection, changes apply to every selected
+ * photo unless "Change all" is turned off.
  */
 @Composable
 private fun PhotoLookEditor(
@@ -527,9 +550,11 @@ private fun PhotoLookEditor(
     onShared: (look: PhotoLook, from: List<String>) -> Unit,
     onShowNow: (String) -> Unit,
     onRemove: (String) -> Unit,
+    onEnableDepth: () -> Unit,
     undoBar: @Composable () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val ctx = LocalContext.current
     val cfg = settings.photos
     val paths = req.paths.filter { it in cfg.albumPaths }
     if (paths.isEmpty()) {
@@ -544,19 +569,24 @@ private fun PhotoLookEditor(
     val here = paths[page]
     var together by remember { mutableStateOf(req.group) }
     val targets = if (together && req.group) paths else listOf(here)
+    var painting by remember { mutableStateOf<String?>(null) }
 
-    // While a slider or pinch is in progress, the preview shows this unsaved change.
-    var live by remember { mutableStateOf<LookChange?>(null) }
-    LaunchedEffect(cfg.looks, shared) { live = null }
-    fun shown(p: String) = saved(p).let { l -> live?.takeIf { p in targets }?.invoke(l) ?: l }
-    fun commit(change: LookChange) { onChange(targets, change) }
+    // Unsaved changes (mid-drag) go to each preview's override, which only redraws the photo.
+    val overrides = remember { mutableMapOf<String, LookOverride>() }
+    fun override(p: String) = overrides.getOrPut(p) { LookOverride() }
+    fun live(change: LookChange) = targets.forEach { override(it).look = change(saved(it)) }
+    fun commit(change: LookChange) = onChange(targets, change)
 
+    val phone = rememberPhoneSize()
     val visible = remember { MutableTransitionState(false).apply { targetState = true } }
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
         AnimatedVisibility(visible, enter = fadeIn() + slideInVertically { it / 12 }) {
             Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxSize()) {
-                Box(Modifier.fillMaxSize()) {
-                    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+                Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                    Column(Modifier.fillMaxSize()) {
                         EditorTopBar(
                             title = if (req.group && together) "Adjusting ${paths.size} photos" else "Photo ${page + 1} of ${paths.size}",
                             subtitle = if (paths.size > 1) "Swipe for the next photo" else null,
@@ -569,13 +599,17 @@ private fun PhotoLookEditor(
                         )
                         HorizontalPager(
                             state = pager,
-                            contentPadding = PaddingValues(horizontal = 72.dp),
+                            contentPadding = PaddingValues(horizontal = 64.dp),
                             pageSpacing = 4.dp,
+                            // Zoomed in, a swipe moves the photo instead of turning the page.
+                            userScrollEnabled = saved(here).photo.zoom <= 1.01f,
                             modifier = Modifier.fillMaxWidth().weight(0.5f),
                         ) { i ->
                             val p = paths[i]
-                            val look = shown(p)
-                            val startLook by rememberUpdatedState(saved(p))
+                            val look = saved(p)
+                            val ov = override(p)
+                            LaunchedEffect(look) { ov.look = null }
+                            val startLook by rememberUpdatedState(look)
                             val preview = remember(settings, p, look) {
                                 settings.copy(
                                     appearance = settings.appearance.copy(background = BackgroundType.IMAGE, imagePath = p).withLook(look),
@@ -592,10 +626,28 @@ private fun PhotoLookEditor(
                                         scaleY = s
                                         alpha = 1f - 0.45f * off
                                     }
-                                    .then(if (i == page) Modifier.pinchToFrame(p, { startLook }, onLive = { live = it }, onDone = ::commit) else Modifier),
-                            ) { LockPreview(preview, Modifier.fillMaxSize()) }
+                                    .then(
+                                        if (i == page) Modifier.frameGestures(
+                                            p, phone.width.value / phone.height.value,
+                                            start = { ov.look ?: startLook }, onLive = ::live, onDone = ::commit,
+                                        ) else Modifier,
+                                    ),
+                            ) {
+                                CompositionLocalProvider(LocalLookOverride provides ov) { LockPreview(preview, Modifier.fillMaxSize()) }
+                            }
                         }
                         PageDots(paths.size, page)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                        ) {
+                            FilledTonalButton(onClick = { LockActivity.preview(ctx, here) }) {
+                                Icon(Icons.Filled.Fullscreen, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Full screen")
+                            }
+                            FilledTonalButton(onClick = { painting = here }) {
+                                Icon(Icons.Filled.ContentCut, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Pop-out")
+                            }
+                        }
                         LookStatus(
                             own = targets.any { it in cfg.looks },
                             count = targets.size,
@@ -604,10 +656,10 @@ private fun PhotoLookEditor(
                             onTogether = { together = it },
                             onUseShared = { onChange(targets, null) },
                         )
-                        Column(Modifier.weight(0.5f).verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+                        Column(Modifier.weight(0.5f).verticalScroll(rememberScrollState()).padding(bottom = 96.dp)) {
                             PhotoLookControls(
                                 look = saved(here), thumbPath = here, accent = accent, showDim = true,
-                                onLive = { live = it }, onChange = ::commit,
+                                onLive = ::live, onChange = ::commit,
                             )
                             TextButton(
                                 onClick = { onChange(targets, null) },
@@ -619,50 +671,90 @@ private fun PhotoLookEditor(
                             }
                         }
                     }
-                    Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 8.dp)) { undoBar() }
+                    Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)) { undoBar() }
                 }
             }
         }
+    }
+
+    painting?.let { p ->
+        CutoutPainter(
+            path = p, accent = accent,
+            onSaved = {
+                painting = null
+                if (!settings.appearance.depth) {
+                    onEnableDepth()
+                    Toast.makeText(ctx, "Depth effect turned on", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onDismiss = { painting = null },
+        )
     }
 }
 
 /**
- * Two-finger pinch to zoom and drag to move the photo inside a [LockPreview]. One-finger swipes
- * are left alone so the pager still turns pages.
+ * Pinch to zoom and drag to move the photo inside a [LockPreview], keeping the spot under the
+ * fingers under the fingers. Double-tap zooms in on that spot, or back out. At 1× one-finger swipes
+ * are left alone so the pager turns pages. [aspect] is the phone's width / height.
  */
-private fun Modifier.pinchToFrame(key: Any, start: () -> PhotoLook, onLive: (LookChange) -> Unit, onDone: (LookChange) -> Unit) =
-    pointerInput(key) {
+private fun Modifier.frameGestures(
+    key: Any,
+    aspect: Float,
+    start: () -> PhotoLook,
+    onLive: (LookChange) -> Unit,
+    onDone: (LookChange) -> Unit,
+): Modifier {
+    fun frame(z: Float, x: Float, y: Float): LookChange = { it.copy(photo = it.photo.copy(zoom = z, panX = x, panY = y)) }
+    // The phone frame fills the preview's height; the background is enlarged like the lock screen's.
+    val o = BACKGROUND_OVERSCAN
+    return pointerInput(key, aspect) {
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false)
             val look = start()
-            var zoom = look.photo.zoom
-            var panX = look.photo.panX
-            var panY = look.photo.panY
+            var z = look.photo.zoom
+            var x = look.photo.panX
+            var y = look.photo.panY
+            val halfH = size.height / 2f
+            val halfW = halfH * aspect
+            val mid = Offset(size.width / 2f, size.height / 2f)
             var moved = false
-            // The phone frame inside the preview: full height, phone-shaped width.
-            val frameH = size.height.toFloat()
-            val frameW = frameH * 412f / 892f
+            var travel = 0f
             do {
                 val ev = awaitPointerEvent()
-                if (ev.changes.count { it.pressed } >= 2) {
-                    zoom = (zoom * ev.calculateZoom()).coerceIn(1f, 2.5f)
+                val multi = ev.changes.count { it.pressed } >= 2
+                if (multi || z > 1.01f) {
                     val pan = ev.calculatePan()
-                    val maxX = (zoom - 1f) * frameW / 2f
-                    val maxY = (zoom - 1f) * frameH / 2f
-                    panX = if (maxX > 0f) (panX - pan.x / maxX).coerceIn(-1f, 1f) else 0f
-                    panY = if (maxY > 0f) (panY - pan.y / maxY).coerceIn(-1f, 1f) else 0f
-                    val z = zoom; val x = panX; val y = panY
-                    onLive { it.copy(photo = it.photo.copy(zoom = z, panX = x, panY = y)) }
+                    travel += pan.getDistance()
+                    // One finger: wait for a real drag so taps (and double-taps) still work.
+                    if (!multi && travel < viewConfiguration.touchSlop) continue
+                    val focus = ev.calculateCentroid(useCurrent = false).takeIf { it.isSpecified } ?: mid
+                    val z2 = (z * if (multi) ev.calculateZoom() else 1f).coerceIn(1f, Framing.MAX_ZOOM)
+                    x = Framing.follow(z, x, z2, (focus.x - mid.x) / o, pan.x / o, halfW)
+                    y = Framing.follow(z, y, z2, (focus.y - mid.y) / o, pan.y / o, halfH)
+                    z = z2
+                    onLive(frame(z, x, y))
                     moved = true
                     ev.changes.forEach { it.consume() }
                 }
             } while (ev.changes.any { it.pressed })
-            if (moved) {
-                val z = zoom; val x = panX; val y = panY
-                onDone { it.copy(photo = it.photo.copy(zoom = z, panX = x, panY = y)) }
-            }
+            if (moved) onDone(frame(z, x, y))
         }
+    }.pointerInput(key, aspect) {
+        detectTapGestures(onDoubleTap = { at ->
+            val look = start()
+            val change = if (look.photo.zoom > 1.01f) frame(1f, 0f, 0f) else {
+                val halfH = size.height / 2f
+                val halfW = halfH * aspect
+                val mid = Offset(size.width / 2f, size.height / 2f)
+                val z2 = 2f
+                val x = Framing.follow(1f, 0f, z2, (at.x - mid.x) / o, 0f, halfW)
+                val y = Framing.follow(1f, 0f, z2, (at.y - mid.y) / o, 0f, halfH)
+                frame(z2, x, y)
+            }
+            onDone(change)
+        })
     }
+}
 
 @Composable
 private fun EditorTopBar(
@@ -828,7 +920,13 @@ internal fun PhotoLookControls(
     slider("Saturation", p.saturation, 0f..2f, ::pct) { v -> { it.copy(photo = it.photo.copy(saturation = v)) } }
     if (showDim) slider("Dim", look.dim, 0f..0.8f, ::pct) { v -> { it.copy(dim = v) } }
     slider("Blur", look.blur, 0f..1f, ::pct) { v -> { it.copy(blur = v) } }
-    slider("Zoom", p.zoom, 1f..2.5f, { "%.1f×".format(it) }) { v -> { it.copy(photo = it.photo.copy(zoom = v)) } }
+    // Zooming keeps the middle of the photo where it is, instead of drifting toward an edge.
+    slider("Zoom", p.zoom, 1f..Framing.MAX_ZOOM, { "%.1f×".format(it) }) { v ->
+        { l ->
+            val c = l.photo
+            l.copy(photo = c.copy(zoom = v, panX = Framing.rezoom(c.zoom, c.panX, v), panY = Framing.rezoom(c.zoom, c.panY, v)))
+        }
+    }
     if (p.zoom > 1.01f) {
         slider("Move left / right", p.panX, -1f..1f, ::signed) { v -> { it.copy(photo = it.photo.copy(panX = v)) } }
         slider("Move up / down", p.panY, -1f..1f, ::signed) { v -> { it.copy(photo = it.photo.copy(panY = v)) } }

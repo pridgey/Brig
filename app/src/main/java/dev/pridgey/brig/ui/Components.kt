@@ -400,19 +400,35 @@ fun AppPickerDialog(onDismiss: () -> Unit, onPick: (AppInfo) -> Unit) {
     )
 }
 
-private val PhoneWidth = 412.dp
-private val PhoneHeight = 892.dp
+/** This phone's full screen size in dp, portrait. Previews use it so they're shaped like the lock screen. */
+@Composable
+internal fun rememberPhoneSize(): androidx.compose.ui.unit.DpSize {
+    val ctx = LocalContext.current
+    return remember(ctx) {
+        val density = ctx.resources.displayMetrics.density
+        val wm = ctx.getSystemService(android.view.WindowManager::class.java)
+        val (w, h) = if (android.os.Build.VERSION.SDK_INT >= 30) {
+            wm.maximumWindowMetrics.bounds.let { it.width() to it.height() }
+        } else {
+            android.util.DisplayMetrics().also {
+                @Suppress("DEPRECATION")
+                wm.defaultDisplay.getRealMetrics(it)
+            }.let { it.widthPixels to it.heightPixels }
+        }
+        if (w <= 0 || h <= 0) androidx.compose.ui.unit.DpSize(412.dp, 892.dp)
+        else androidx.compose.ui.unit.DpSize((minOf(w, h) / density).dp, (maxOf(w, h) / density).dp)
+    }
+}
 
-/**
- * A live lock screen inside a phone frame. It lays out at real phone size and is scaled to fit,
- * so the preview matches the real thing exactly. Fills the height it is given.
- */
 @Composable
 fun LockPreview(settings: BrigSettings, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
+    val phone = rememberPhoneSize()
     BoxWithConstraints(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        val frameH = maxHeight
-        val frameW = frameH * (PhoneWidth.value / PhoneHeight.value)
-        val s = frameW.value / PhoneWidth.value
+        // As large as fits, keeping the phone's shape.
+        val fitH = minOf(maxHeight, maxWidth * (phone.height.value / phone.width.value))
+        val frameH = fitH
+        val frameW = frameH * (phone.width.value / phone.height.value)
+        val s = frameW.value / phone.width.value
         val shape = RoundedCornerShape(frameW * 0.13f)
         Box(
             Modifier
@@ -423,7 +439,7 @@ fun LockPreview(settings: BrigSettings, modifier: Modifier = Modifier, onClick: 
         ) {
             Box(
                 Modifier
-                    .requiredSize(PhoneWidth, PhoneHeight)
+                    .requiredSize(phone.width, phone.height)
                     .graphicsLayer {
                         scaleX = s
                         scaleY = s

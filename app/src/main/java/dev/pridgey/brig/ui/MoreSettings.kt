@@ -17,6 +17,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -243,6 +244,16 @@ fun LiveEffectsSettings(a: Appearance, set: ((Appearance) -> Appearance) -> Unit
                 }
             }
             if (a.depth) {
+                val path = rotated?.path ?: a.imagePath
+                var painting by remember { mutableStateOf(false) }
+                if (path != null) {
+                    ClickRow("Choose what pops out", "Paint over the part of this photo that should stand in front of the clock", Icons.Filled.ContentCut) {
+                        painting = true
+                    }
+                }
+                if (painting && path != null) {
+                    CutoutPainter(path, resolveAccent(a.accent), onSaved = { painting = false }, onDismiss = { painting = false })
+                }
                 SwitchRow(
                     "Keep the clock clear",
                     "Skip the effect on photos where the subject would hide most of the clock",

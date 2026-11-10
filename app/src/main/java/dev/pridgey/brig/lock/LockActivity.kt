@@ -55,6 +55,9 @@ import dev.pridgey.brig.util.Torch
 class LockActivity : ComponentActivity() {
     private lateinit var controller: LockController
 
+    /** Set when opened from a photo editor to preview one photo; back returns to the editor. */
+    private val previewPhoto = mutableStateOf<String?>(null)
+
     private val userPresent = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             // Unlocked with fingerprint/face/PIN from the system: get out of the way.
@@ -79,8 +82,11 @@ class LockActivity : ComponentActivity() {
 
         NotificationManagerCompat.from(this).cancel(Notifications.LOCK_FSI_ID)
         controller = LockController(this)
-        rotatePhoto()
-        onBackPressedDispatcher.addCallback(this) { controller.gateCancelled() }
+        previewPhoto.value = intent.getStringExtra(EXTRA_PREVIEW)
+        if (previewPhoto.value == null) rotatePhoto()
+        onBackPressedDispatcher.addCallback(this) {
+            if (previewPhoto.value != null) finish() else controller.gateCancelled()
+        }
         ContextCompat.registerReceiver(
             this, userPresent, IntentFilter(Intent.ACTION_USER_PRESENT), ContextCompat.RECEIVER_NOT_EXPORTED,
         )
@@ -95,15 +101,17 @@ class LockActivity : ComponentActivity() {
                 else insets.show(WindowInsetsCompat.Type.statusBars())
             }
             BrigTheme(accent = settings.appearance.accent, dark = true) {
-                LockScreen(settings, controller)
+                LockScreen(settings, controller, previewPhoto.value)
             }
         }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         controller.reset()
-        rotatePhoto()
+        previewPhoto.value = intent.getStringExtra(EXTRA_PREVIEW)
+        if (previewPhoto.value == null) rotatePhoto()
     }
 
     /**
@@ -139,6 +147,17 @@ class LockActivity : ComponentActivity() {
     }
 
     companion object {
+        private const val EXTRA_PREVIEW = "preview_photo"
+
+        /** Shows the real lock screen with [path] as the photo, to check exactly how it looks. */
+        fun preview(ctx: Context, path: String) {
+            ctx.startActivity(
+                Intent(ctx, LockActivity::class.java)
+                    .putExtra(EXTRA_PREVIEW, path)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+
         fun show(ctx: Context) {
             ctx.startActivity(
                 Intent(ctx, LockActivity::class.java)

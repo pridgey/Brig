@@ -176,8 +176,9 @@ import dev.pridgey.brig.data.Sleep
 @Composable
 internal fun rememberCutout(photoPath: String?, on: Boolean): String? {
     val ctx = LocalContext.current
-    val cached = remember(photoPath, on) { if (on && photoPath != null) dev.pridgey.brig.util.Segmenter.cached(ctx, photoPath) else null }
-    val made by produceState(cached, photoPath, on) {
+    val version by dev.pridgey.brig.util.Segmenter.changes.collectAsState()
+    val cached = remember(photoPath, on, version) { if (on && photoPath != null) dev.pridgey.brig.util.Segmenter.cached(ctx, photoPath) else null }
+    val made by produceState(cached, photoPath, on, version) {
         value = cached ?: if (on && photoPath != null) dev.pridgey.brig.util.Segmenter.cutout(ctx, photoPath) else null
     }
     return made
@@ -186,10 +187,11 @@ internal fun rememberCutout(photoPath: String?, on: Boolean): String? {
 /** Background opacity for glance chips, from Appearance. */
 val LocalChipAlpha = compositionLocalOf { 0.12f }
 
+/** [previewPhoto] shows that photo (with its own look) instead of the usual one, for previews. */
 @Composable
-fun LockScreen(settings: BrigSettings, controller: LockController) {
+fun LockScreen(settings: BrigSettings, controller: LockController, previewPhoto: String? = null) {
     CompositionLocalProvider(LocalChipAlpha provides settings.appearance.chipOpacity) {
-        LockScreenContent(settings, controller)
+        LockScreenContent(settings, controller, previewPhoto)
     }
 }
 
@@ -210,7 +212,7 @@ private fun BrigSettings.forGuest(): BrigSettings = if (!guest.active) this else
 private enum class ContentPart { ALL, CLOCK_ONLY, NO_CLOCK }
 
 @Composable
-private fun LockScreenContent(rawSettings: BrigSettings, controller: LockController) {
+private fun LockScreenContent(rawSettings: BrigSettings, controller: LockController, previewPhoto: String?) {
     val context = LocalContext.current
     val settings = rawSettings.forGuest()
     val base = settings.appearance
@@ -229,9 +231,10 @@ private fun LockScreenContent(rawSettings: BrigSettings, controller: LockControl
     // The photo: a profile's photo wins, then the rotating source, then the one picked in settings.
     val rotated by PhotoRotator.current.collectAsState()
     val rotating = settings.photos.source != PhotoSource.SINGLE
-    val photoPath = effects.imagePath ?: (if (rotating) rotated?.path else null) ?: base.imagePath
+    val photoPath = previewPhoto ?: effects.imagePath ?: (if (rotating) rotated?.path else null) ?: base.imagePath
     val appearance = base.copy(
-        background = effects.background ?: if (effects.imagePath != null) BackgroundType.IMAGE else base.background,
+        background = if (previewPhoto != null) BackgroundType.IMAGE
+        else effects.background ?: if (effects.imagePath != null) BackgroundType.IMAGE else base.background,
         imagePath = photoPath,
     ).let { it.withLookFor(settings.photos, photoPath) }
     // Album art takes over the background while music plays.
@@ -327,7 +330,7 @@ private fun LockScreenContent(rawSettings: BrigSettings, controller: LockControl
         val backgroundModifier = Modifier.graphicsLayer {
             translationX = dragX.value * 0.08f + tilt.x * 22.dp.toPx()
             translationY = dragY.value * 0.08f + tilt.y * 22.dp.toPx()
-            val s = 1.06f - (abs(dragY.value) / (threshold * 20)).coerceAtMost(0.04f)
+            val s = BACKGROUND_OVERSCAN - (abs(dragY.value) / (threshold * 20)).coerceAtMost(0.04f)
             scaleX = s
             scaleY = s
         }
@@ -369,9 +372,26 @@ private fun LockScreenContent(rawSettings: BrigSettings, controller: LockControl
             }
         }
 
+        if (previewPhoto != null) PreviewBadge(Modifier.align(Alignment.BottomCenter))
+
         controller.gate?.let {
             UnlockGate(settings.unlock, accent, onSuccess = controller::gatePassed, onCancel = controller::gateCancelled)
         }
+    }
+}
+
+/** A short-lived note that this is a preview, and how to get back. */
+@Composable
+private fun PreviewBadge(modifier: Modifier) {
+    var visible by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) { kotlinx.coroutines.delay(3_500); visible = false }
+    androidx.compose.animation.AnimatedVisibility(
+        visible, modifier.padding(bottom = 48.dp),
+        enter = androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.fadeOut(),
+    ) {
+        Box(
+            Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 16.dp, vertical = 8.dp),
+        ) { Text("Preview · press back to return", color = Color.White, style = MaterialTheme.typography.labelLarge) }
     }
 }
 
@@ -976,10 +996,22 @@ private fun LockMockContent(settings: BrigSettings) {
     val align = a.clockAlignment()
     val nowMs = remember(now.minute) { System.currentTimeMillis() }
     val events = remember(nowMs, settings.calendar.count) { sampleEvents(nowMs).take(settings.calendar.count) }
+    // The lock screen hides the navigation bar but keeps the status bar unless asked not to.
+    val statusBar = with(LocalDensity.current) {
+        remember(ctx) {
+            val id = ctx.resources.getIdentifier("status_bar_height", "dimen", "android")
+            if (id > 0) ctx.resources.getDimensionPixelSize(id) else 0
+        }.toDp()
+    }
+    // Enlarged like the lock screen's background, so the photo is framed the same.
+    val overscan = Modifier.graphicsLayer {
+        scaleX = BACKGROUND_OVERSCAN
+        scaleY = BACKGROUND_OVERSCAN
+    }
     @Composable
     fun Layer(showHeader: Boolean, showWidgets: Boolean) {
         ZonedLayout(
-            settings, align, Modifier.fillMaxSize(), extraTop = 44.dp, extraBottom = 24.dp,
+            settings, align, Modifier.fillMaxSize(), extraTop = if (a.hideStatusBar) 0.dp else statusBar,
             showHeader = showHeader, showWidgets = showWidgets,
             header = {
                 Clock(a.clockStyle, now, ClockSpec.from(a, accent), Modifier.align(align).onGloballyPositioned { clockTracker.report(it) })
@@ -1066,12 +1098,12 @@ private fun LockMockContent(settings: BrigSettings) {
     }
 
     Box(Modifier.fillMaxSize().onPlaced { clockTracker.root = it }) {
-        LockBackground(a, accent)
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = a.dim)))
+        LockBackground(a, accent, overscan)
+        DimLayer(a.dim)
         if (cut != null) {
             // Depth: clock, then the subject, then the widgets, like the real lock screen.
             Layer(showHeader = true, showWidgets = false)
-            DepthForeground(a, cut, accent, a.dim, clock = clockTracker)
+            DepthForeground(a, cut, accent, a.dim, overscan, clock = clockTracker)
             Layer(showHeader = false, showWidgets = true)
         } else {
             Layer(showHeader = true, showWidgets = true)

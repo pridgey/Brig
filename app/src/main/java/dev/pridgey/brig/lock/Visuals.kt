@@ -1,5 +1,7 @@
 package dev.pridgey.brig.lock
 
+import androidx.compose.runtime.staticCompositionLocalOf
+
 import android.graphics.Bitmap
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.ui.draw.clipToBounds
@@ -137,8 +139,32 @@ fun rememberBattery(): State<BatteryState> {
 
 // ---------------------------------------------------------------- Backgrounds
 
+/**
+ * How much the background is enlarged on the lock screen, leaving room to shift for parallax.
+ * Previews use the same so they frame the photo exactly like the lock screen.
+ */
+const val BACKGROUND_OVERSCAN = 1.06f
+
+/**
+ * Unsaved look changes for a preview, read only by the background layers so a slider or pinch
+ * redraws the photo without rebuilding the rest of the preview.
+ */
+class LookOverride {
+    var look by mutableStateOf<dev.pridgey.brig.data.PhotoLook?>(null)
+}
+
+val LocalLookOverride = staticCompositionLocalOf<LookOverride?> { null }
+
+/** The preview's dim layer, following any [LookOverride]. */
 @Composable
-fun LockBackground(appearance: Appearance, accent: Color, modifier: Modifier = Modifier) {
+fun DimLayer(dim: Float) {
+    val d = LocalLookOverride.current?.look?.dim ?: dim
+    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = d)))
+}
+
+@Composable
+fun LockBackground(base: Appearance, accent: Color, modifier: Modifier = Modifier) {
+    val appearance = LocalLookOverride.current?.look?.let { base.copy(photo = it.photo, blur = it.blur) } ?: base
     Box(modifier.fillMaxSize().background(Color.Black)) {
         when (appearance.background) {
             BackgroundType.AURORA -> Aurora(accent)
@@ -191,7 +217,9 @@ fun DepthForeground(
     modifier: Modifier = Modifier,
     clock: dev.pridgey.brig.util.ClockTracker? = null,
 ) {
-    val cfg = appearance.photo
+    val override = LocalLookOverride.current?.look
+    val cfg = override?.photo ?: appearance.photo
+    val dim = override?.dim ?: dim
     val bmp by produceState<ImageBitmap?>(null, cutoutPath) {
         value = withContext(Dispatchers.IO) { loadPhoto(cutoutPath, 1440) }
     }
