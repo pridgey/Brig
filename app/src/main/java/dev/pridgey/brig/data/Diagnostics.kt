@@ -120,7 +120,12 @@ object CrashLog {
                 append(" · memory ${info.pss / 1024} MB PSS, ${info.rss / 1024} MB RSS\n")
                 info.description?.takeIf { it.isNotBlank() }?.let { append("Details: $it\n") }
                 if (info.reason == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE || info.reason == android.app.ApplicationExitInfo.REASON_ANR) {
-                    runCatching { info.traceInputStream?.use { readable(it.readBytes()) } }.getOrNull()
+                    runCatching {
+                        info.traceInputStream?.use { input ->
+                            val bytes = input.readBytes()
+                            dev.pridgey.brig.util.Tombstone.parse(bytes)?.let(dev.pridgey.brig.util.Tombstone::describe) ?: readable(bytes)
+                        }
+                    }.getOrNull()
                         ?.takeIf { it.isNotBlank() }?.let { append("\nTrace:\n").append(it) }
                 }
             }

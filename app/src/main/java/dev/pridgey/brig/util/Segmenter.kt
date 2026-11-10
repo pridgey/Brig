@@ -1,8 +1,17 @@
 package dev.pridgey.brig.util
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Bundle
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.Message
+import android.os.Messenger
 import com.google.android.gms.common.moduleinstall.ModuleInstall
 import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
 import com.google.android.gms.tasks.Task
@@ -15,6 +24,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -26,12 +38,20 @@ private suspend fun <T> Task<T>.await(): T = suspendCancellableCoroutine { cont 
 }
 
 /**
- * Cuts the main subject out of a photo (ML Kit, on device) for the depth effect, where the subject
- * is drawn over the clock. Results are cached as PNGs next to the photo's other files.
+ * Finds the subject of a photo (ML Kit, on device) for the depth effect, where the subject is
+ * drawn over the clock, and for the pop-out painter.
+ *
+ * ML Kit's native code can crash, or use a lot of memory, on some phones. So it never runs in
+ * Brig's own process: the work happens in [SegmentService], in a separate process, and results come
+ * back as files. If that process dies, Brig carries on without a cut-out (or with a simpler mode).
  */
 object Segmenter {
     /** Same size the lock screen decodes photos at, so the cutout lines up exactly. */
     const val MAX_DIM = 1440
+
+    /** Longest side of the photo used for painting. Keeps memory low; plenty for a phone screen. */
+    private const val PAINT_DIM = 1280
+
     private val lock = Mutex()
 
     /** Bumps whenever a cut-out is replaced by hand, so screens showing one reload it. */
@@ -46,6 +66,8 @@ object Segmenter {
         val dir = File(ctx.filesDir, "cutouts").apply { mkdirs() }
         return File(dir, "${key(path)}.png")
     }
+
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("segmenter", Context.MODE_PRIVATE)
 
     /** Cut-outs the user chose by painting. Kept apart from the automatic cache, which can be cleared. */
     private fun guidedDir(ctx: Context) = File(ctx.filesDir, "cutouts_guided").apply { mkdirs() }
@@ -78,12 +100,58 @@ object Segmenter {
         changes.value++
     }
 
-    /** One thing ML Kit found in a photo, with how sure it is of each pixel (0..1). */
-    class Region(val x: Int, val y: Int, val width: Int, val height: Int, val mask: FloatArray) {
+    fun clear(ctx: Context) {
+        File(ctx.filesDir, "cutouts").listFiles()?.forEach { it.delete() }
+        prefs(ctx).edit().remove("failed").apply()
+    }
+
+    // ---------------------------------------------------------------- Automatic cut-out
+
+    /** Returns the cutout PNG path, creating it if needed. Null if there's no clear subject or ML Kit fails. */
+    suspend fun cutout(ctx: Context, path: String): String? = lock.withLock {
+        cached(ctx, path)?.let { return@withLock it }
+        // Don't keep retrying a photo whose analysis took the helper process down.
+        val failed = prefs(ctx).getStringSet("failed", emptySet()).orEmpty()
+        if (key(path) in failed) return@withLock null
+        val out = cacheFile(ctx, path)
+        when (isolated(ctx, SegmentService.OP_CUTOUT, path, out)) {
+            Outcome.OK -> out.takeIf { it.exists() }?.absolutePath
+            Outcome.CRASHED -> {
+                prefs(ctx).edit().putStringSet("failed", failed + key(path)).apply()
+                null
+            }
+            Outcome.FAILED -> null
+        }
+    }
+
+    /** Runs in [SegmentService]: makes the cut-out PNG for [path] at [out]. */
+    internal suspend fun cutoutHere(ctx: Context, path: String, out: File): Boolean {
+        val bmp = decode(path) ?: return false
+        val segmenter = SubjectSegmentation.getClient(SubjectSegmenterOptions.Builder().enableForegroundBitmap().build())
+        return try {
+            install(ctx, segmenter)
+            val fg = segmenter.process(InputImage.fromBitmap(bmp, 0)).await().foregroundBitmap ?: return false
+            val tmp = File(out.parentFile, out.name + ".tmp")
+            tmp.outputStream().use { fg.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            tmp.renameTo(out)
+        } finally {
+            segmenter.close()
+        }
+    }
+
+    private suspend fun install(ctx: Context, segmenter: com.google.mlkit.vision.segmentation.subject.SubjectSegmenter) {
+        // The model ships through Play services; make sure it's downloaded first.
+        runCatching { ModuleInstall.getClient(ctx).installModules(ModuleInstallRequest.newBuilder().addApi(segmenter).build()).await() }
+    }
+
+    // ---------------------------------------------------------------- Painter analysis
+
+    /** One thing ML Kit found in a photo, with how sure it is of each pixel (0..255). */
+    class Region(val x: Int, val y: Int, val width: Int, val height: Int, val mask: ByteArray) {
         fun covers(px: Int, py: Int): Boolean {
             val lx = px - x
             val ly = py - y
-            return lx in 0 until width && ly in 0 until height && mask[ly * width + lx] > 0.5f
+            return lx in 0 until width && ly in 0 until height && (mask[ly * width + lx].toInt() and 0xFF) > 127
         }
 
         /** The mask as an alpha-only bitmap, for drawing. */
@@ -93,98 +161,114 @@ object Segmenter {
     /**
      * A smaller copy of a photo for painting on, with everything found in it. The cut-out itself
      * is made at full size when saved, so this only has to be big enough to see and touch.
+     * [mode]: 0 = each object found separately, 1 = just the main subject, 2 = none (paint by hand).
      */
     class Analysis(val photo: Bitmap, val regions: List<Region>, val foreground: Bitmap?, val mode: Int = 0)
 
     /**
-     * How much object finding the painter asks for: 0 = each object separately, 1 = just the
-     * main subject, 2 = none (paint by hand). If the app dies mid-analysis, the next try steps
-     * down a level, so a phone where ML Kit crashes can't crash the same way twice.
+     * Finds each separate subject in the photo. If the helper process dies, tries again asking
+     * for less (the main subject only), then gives up and lets the user paint by hand. The step
+     * down is remembered, so a phone where ML Kit crashes doesn't pay for it every time.
+     * Null only if the photo itself can't be read.
      */
-    private fun prefs(ctx: Context) = ctx.getSharedPreferences("segmenter", Context.MODE_PRIVATE)
-
-    private fun safeMode(ctx: Context): Int {
-        val p = prefs(ctx)
-        var mode = p.getInt("mode", 0)
-        if (p.getBoolean("running", false)) {
-            mode = (mode + 1).coerceAtMost(2)
-            p.edit().putInt("mode", mode).putBoolean("running", false).commit()
-        }
-        return mode
-    }
-
-    private fun running(ctx: Context, on: Boolean) {
-        // commit, not apply: it has to be on disk before a crash could happen.
-        prefs(ctx).edit().putBoolean("running", on).commit()
-    }
-
-    /** Longest side of the photo used for painting. Keeps memory low; plenty for a phone screen. */
-    private const val PAINT_DIM = 1280
-
-    /** Finds each separate subject in the photo. Null if the photo can't be read or ML Kit fails. */
     suspend fun analyze(ctx: Context, path: String): Analysis? = lock.withLock {
         withContext(Dispatchers.Default) {
-            val bmp = try {
-                decodeAtMost(path, PAINT_DIM)
-            } catch (e: Throwable) {
-                null
-            } ?: return@withContext null
-            val mode = safeMode(ctx)
-            if (mode >= 2) return@withContext Analysis(bmp, emptyList(), null, mode)
-            val segmenter = try {
-                val options = SubjectSegmenterOptions.Builder().enableForegroundConfidenceMask()
-                if (mode == 0) options.enableMultipleSubjects(SubjectSegmenterOptions.SubjectResultOptions.Builder().enableConfidenceMask().build())
-                SubjectSegmentation.getClient(options.build())
-            } catch (e: Throwable) {
-                return@withContext Analysis(bmp, emptyList(), null, mode)
+            val bmp = runCatching { decodeAtMost(path, PAINT_DIM) }.getOrNull() ?: return@withContext null
+            var mode = prefs(ctx).getInt("iso_mode", 0)
+            while (mode < 2) {
+                val dir = File(ctx.cacheDir, "segment").apply { deleteRecursively(); mkdirs() }
+                when (isolated(ctx, SegmentService.OP_ANALYZE, path, dir, mode)) {
+                    Outcome.OK -> return@withContext readAnalysis(dir, bmp, mode) ?: Analysis(bmp, emptyList(), null, mode)
+                    Outcome.FAILED -> return@withContext Analysis(bmp, emptyList(), null, mode)
+                    Outcome.CRASHED -> {
+                        mode++
+                        prefs(ctx).edit().putInt("iso_mode", mode).apply()
+                    }
+                }
             }
-            try {
-                runCatching {
-                    ModuleInstall.getClient(ctx).installModules(ModuleInstallRequest.newBuilder().addApi(segmenter).build()).await()
-                }
-                running(ctx, true)
-                val r = try {
-                    segmenter.process(InputImage.fromBitmap(bmp, 0)).await()
-                } finally {
-                    running(ctx, false)
-                }
-                val regions = r.subjects.orEmpty().mapNotNull { sub ->
-                    val buf = sub.confidenceMask ?: return@mapNotNull null
-                    if (sub.width <= 0 || sub.height <= 0) return@mapNotNull null
-                    val arr = FloatArray(sub.width * sub.height)
-                    buf.rewind()
-                    buf.get(arr, 0, minOf(arr.size, buf.remaining()))
-                    Region(sub.startX, sub.startY, sub.width, sub.height, arr)
-                }
-                val fg = r.foregroundConfidenceMask?.let { buf ->
-                    val arr = FloatArray(bmp.width * bmp.height)
-                    buf.rewind()
-                    buf.get(arr, 0, minOf(arr.size, buf.remaining()))
-                    alphaOf(arr, bmp.width, bmp.height)
-                }
-                Analysis(bmp, regions, fg, mode)
-            } catch (e: Throwable) {
-                // Out of memory or ML Kit trouble: still let the user paint by hand.
-                Analysis(bmp, emptyList(), null, mode)
-            } finally {
-                runCatching { segmenter.close() }
-            }
+            Analysis(bmp, emptyList(), null, mode)
         }
     }
 
-    /** An alpha-only bitmap from 0..1 values, one byte per pixel. */
-    private fun alphaOf(mask: FloatArray, w: Int, h: Int): Bitmap {
+    /** Runs in [SegmentService]: analyzes [path] and writes the masks into [dir]. */
+    internal suspend fun analyzeHere(ctx: Context, path: String, dir: File, mode: Int): Boolean {
+        val bmp = decodeAtMost(path, PAINT_DIM) ?: return false
+        val options = SubjectSegmenterOptions.Builder().enableForegroundConfidenceMask()
+        if (mode == 0) options.enableMultipleSubjects(SubjectSegmenterOptions.SubjectResultOptions.Builder().enableConfidenceMask().build())
+        val segmenter = SubjectSegmentation.getClient(options.build())
+        try {
+            install(ctx, segmenter)
+            val r = segmenter.process(InputImage.fromBitmap(bmp, 0)).await()
+            r.foregroundConfidenceMask?.let { buf ->
+                DataOutputStream(File(dir, "fg.bin").outputStream().buffered()).use { out ->
+                    out.writeInt(bmp.width)
+                    out.writeInt(bmp.height)
+                    out.write(toBytes(buf, bmp.width * bmp.height))
+                }
+            }
+            val subjects = r.subjects.orEmpty().filter { it.confidenceMask != null && it.width > 0 && it.height > 0 }
+            DataOutputStream(File(dir, "regions.bin").outputStream().buffered()).use { out ->
+                out.writeInt(bmp.width)
+                out.writeInt(bmp.height)
+                out.writeInt(subjects.size)
+                subjects.forEach { s ->
+                    out.writeInt(s.startX)
+                    out.writeInt(s.startY)
+                    out.writeInt(s.width)
+                    out.writeInt(s.height)
+                    out.write(toBytes(s.confidenceMask!!, s.width * s.height))
+                }
+            }
+            return true
+        } finally {
+            segmenter.close()
+        }
+    }
+
+    private fun toBytes(buf: java.nio.FloatBuffer, n: Int): ByteArray {
+        buf.rewind()
+        val out = ByteArray(n)
+        val count = minOf(n, buf.remaining())
+        for (i in 0 until count) out[i] = (buf.get().coerceIn(0f, 1f) * 255f).toInt().toByte()
+        return out
+    }
+
+    private fun readAnalysis(dir: File, bmp: Bitmap, mode: Int): Analysis? = runCatching {
+        val fgFile = File(dir, "fg.bin")
+        val fg = if (!fgFile.exists()) null else DataInputStream(fgFile.inputStream().buffered()).use { inp ->
+            val w = inp.readInt()
+            val h = inp.readInt()
+            val bytes = ByteArray(w * h).also { inp.readFully(it) }
+            if (w == bmp.width && h == bmp.height) alphaOf(bytes, w, h) else null
+        }
+        val regions = mutableListOf<Region>()
+        val regFile = File(dir, "regions.bin")
+        if (regFile.exists()) DataInputStream(regFile.inputStream().buffered()).use { inp ->
+            val w = inp.readInt()
+            val h = inp.readInt()
+            val n = inp.readInt()
+            repeat(n) {
+                val x = inp.readInt()
+                val y = inp.readInt()
+                val rw = inp.readInt()
+                val rh = inp.readInt()
+                val bytes = ByteArray(rw * rh).also { inp.readFully(it) }
+                if (w == bmp.width && h == bmp.height) regions += Region(x, y, rw, rh, bytes)
+            }
+        }
+        Analysis(bmp, regions, fg, mode)
+    }.getOrNull()
+
+    /** An alpha-only bitmap from 0..255 values, one byte per pixel. */
+    private fun alphaOf(mask: ByteArray, w: Int, h: Int): Bitmap {
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ALPHA_8)
         val row = out.rowBytes
-        val bytes = ByteArray(row * h)
-        for (y in 0 until h) {
-            val src = y * w
-            val dst = y * row
-            for (x in 0 until w) bytes[dst + x] = (mask[src + x].coerceIn(0f, 1f) * 255f).toInt().toByte()
-        }
+        val bytes = if (row == w) mask else ByteArray(row * h).also { for (y in 0 until h) System.arraycopy(mask, y * w, it, y * row, w) }
         out.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(bytes))
         return out
     }
+
+    // ---------------------------------------------------------------- Decoding
 
     /** Decodes [path] with its longest side at most [maxDim] pixels. */
     fun decodeAtMost(path: String, maxDim: Int): Bitmap? {
@@ -210,32 +294,60 @@ object Segmenter {
         return BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
     }
 
-    /** Returns the cutout PNG path, creating it if needed. Null if there's no clear subject or ML Kit is unavailable. */
-    suspend fun cutout(ctx: Context, path: String): String? = lock.withLock {
-        cached(ctx, path)?.let { return@withLock it }
-        withContext(Dispatchers.Default) {
-            val bmp = decode(path) ?: return@withContext null
-            val segmenter = SubjectSegmentation.getClient(
-                SubjectSegmenterOptions.Builder().enableForegroundBitmap().build(),
-            )
-            try {
-                // The model ships through Play services; make sure it's downloaded first.
-                runCatching {
-                    ModuleInstall.getClient(ctx).installModules(ModuleInstallRequest.newBuilder().addApi(segmenter).build()).await()
-                }
-                val fg = segmenter.process(InputImage.fromBitmap(bmp, 0)).await().foregroundBitmap ?: return@withContext null
-                val out = cacheFile(ctx, path)
-                out.outputStream().use { fg.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                out.absolutePath
-            } catch (e: Exception) {
-                null
-            } finally {
-                segmenter.close()
-            }
-        }
-    }
+    // ---------------------------------------------------------------- Talking to the helper process
 
-    fun clear(ctx: Context) {
-        File(ctx.filesDir, "cutouts").listFiles()?.forEach { it.delete() }
+    private enum class Outcome { OK, FAILED, CRASHED }
+
+    /**
+     * Asks [SegmentService] to do [op] and waits for the answer. CRASHED means its process died
+     * (ML Kit crashed or Android closed it for memory); Brig itself is unaffected.
+     */
+    private suspend fun isolated(ctx: Context, op: Int, path: String, out: File, mode: Int = 0): Outcome {
+        val app = ctx.applicationContext
+        return withTimeoutOrNull(120_000) {
+            suspendCancellableCoroutine { cont ->
+                var done = false
+                lateinit var conn: ServiceConnection
+                fun finish(o: Outcome) {
+                    if (done) return
+                    done = true
+                    runCatching { app.unbindService(conn) }
+                    if (cont.isActive) cont.resume(o)
+                }
+                conn = object : ServiceConnection {
+                    override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                        if (binder == null) return finish(Outcome.FAILED)
+                        val reply = Messenger(Handler(Looper.getMainLooper()) { m -> finish(if (m.arg1 == 1) Outcome.OK else Outcome.FAILED); true })
+                        val msg = Message.obtain(null, op).apply {
+                            data = Bundle().apply {
+                                putString(SegmentService.KEY_PATH, path)
+                                putString(SegmentService.KEY_OUT, out.absolutePath)
+                                putInt(SegmentService.KEY_MODE, mode)
+                            }
+                            replyTo = reply
+                        }
+                        runCatching { Messenger(binder).send(msg) }.onFailure { finish(Outcome.CRASHED) }
+                    }
+
+                    override fun onServiceDisconnected(name: ComponentName?) = finish(Outcome.CRASHED)
+                    override fun onBindingDied(name: ComponentName?) = finish(Outcome.CRASHED)
+                    override fun onNullBinding(name: ComponentName?) = finish(Outcome.FAILED)
+                }
+                cont.invokeOnCancellation {
+                    Handler(Looper.getMainLooper()).post {
+                        if (!done) {
+                            done = true
+                            runCatching { app.unbindService(conn) }
+                        }
+                    }
+                }
+                Handler(Looper.getMainLooper()).post {
+                    val bound = runCatching {
+                        app.bindService(Intent(app, SegmentService::class.java), conn, Context.BIND_AUTO_CREATE)
+                    }.getOrDefault(false)
+                    if (!bound) finish(Outcome.FAILED)
+                }
+            }
+        } ?: Outcome.FAILED
     }
 }

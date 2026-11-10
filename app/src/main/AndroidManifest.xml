@@ -105,6 +105,12 @@
             </intent-filter>
         </service>
 
+        <!-- ML Kit runs here, in its own process, so a crash in its native code can't take Brig down. -->
+        <service
+            android:name=".util.SegmentService"
+            android:exported="false"
+            android:process=":segment" />
+
         <service
             android:name=".service.LockService"
             android:exported="false"

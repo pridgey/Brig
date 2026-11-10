@@ -17,6 +17,8 @@ class BrigApp : Application() {
         super.onCreate()
         instance = this
         dev.pridgey.brig.data.CrashLog.install(this)
+        // The ML Kit helper process (see SegmentService) needs none of the app's start-up work.
+        if (getProcessName().endsWith(":segment")) return
         settingsRepo = SettingsRepository(this, appScope)
         Notifications.createChannels(this)
         dev.pridgey.brig.data.PhotoRotator.restore(this)
