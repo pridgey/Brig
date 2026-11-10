@@ -2,7 +2,6 @@ package dev.pridgey.brig.ui
 
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.material3.TopAppBar
@@ -506,9 +505,30 @@ fun SpinningBadge(size: Dp, color: Color, polygon: androidx.graphics.shapes.Roun
 }
 
 /**
- * A dialog that covers the whole screen, edge to edge, with its content kept clear of the status
- * bar, navigation bar and camera cutout. Dialog windows don't always receive the system bar sizes,
- * so this also takes them from the app's own window and uses whichever is larger.
+ * Full-screen layers drawn over the whole app by [OverlayHost]. They live in the app's own window
+ * (not a separate dialog window), so they get the screen size and system bar sizes the same
+ * reliable way every other screen does.
+ */
+internal object Overlays {
+    class Layer {
+        var content by mutableStateOf<@Composable () -> Unit>({})
+    }
+
+    val stack = androidx.compose.runtime.mutableStateListOf<Layer>()
+}
+
+/** Draws [content] with any open [FullScreenDialog]s on top. Put it at the root of the app. */
+@Composable
+fun OverlayHost(content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize()) {
+        content()
+        Overlays.stack.forEach { layer -> androidx.compose.runtime.key(layer) { layer.content() } }
+    }
+}
+
+/**
+ * A full-screen layer over the whole app, edge to edge, with its content kept clear of the status
+ * bar, navigation bar and camera cutout. Back closes it. Needs an [OverlayHost] at the app's root.
  */
 @Composable
 fun FullScreenDialog(
@@ -516,34 +536,18 @@ fun FullScreenDialog(
     color: Color = MaterialTheme.colorScheme.surface,
     content: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit,
 ) {
-    val view = androidx.compose.ui.platform.LocalView.current
-    val density = LocalDensity.current
-    val bars = remember(view) {
-        val types = androidx.core.view.WindowInsetsCompat.Type.systemBars() or androidx.core.view.WindowInsetsCompat.Type.displayCutout()
-        val i = androidx.core.view.ViewCompat.getRootWindowInsets(view)?.getInsets(types)
-        with(density) {
-            androidx.compose.foundation.layout.WindowInsets(
-                left = (i?.left ?: 0).toDp(), top = (i?.top ?: 0).toDp(),
-                right = (i?.right ?: 0).toDp(), bottom = (i?.bottom ?: 0).toDp(),
-            )
+    val layer = remember { Overlays.Layer() }
+    val dismiss by androidx.compose.runtime.rememberUpdatedState(onDismiss)
+    val body: @Composable () -> Unit = {
+        androidx.activity.compose.BackHandler { dismiss() }
+        // A Surface also stops touches from reaching the screen underneath.
+        Surface(color = color, modifier = Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize().windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing), content = content)
         }
     }
-    androidx.compose.ui.window.Dialog(
-        onDismissRequest = onDismiss,
-        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
-        // Make the dialog's window fill the screen, not just wrap its content.
-        val window = (androidx.compose.ui.platform.LocalView.current.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window
-        androidx.compose.runtime.SideEffect {
-            window?.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
-        }
-        Surface(color = color, modifier = Modifier.fillMaxSize()) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing.union(bars)),
-                content = content,
-            )
-        }
+    androidx.compose.runtime.SideEffect { layer.content = body }
+    androidx.compose.runtime.DisposableEffect(layer) {
+        Overlays.stack += layer
+        onDispose { Overlays.stack -= layer }
     }
 }

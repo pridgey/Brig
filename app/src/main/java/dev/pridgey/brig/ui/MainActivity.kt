@@ -130,7 +130,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             val settings by BrigApp.settings.flow.collectAsStateWithLifecycle()
             BrigTheme(accent = settings.appearance.accent) {
-                Surface(color = MaterialTheme.colorScheme.background) { BrigSettingsApp(settings, start ?: Screen.HOME) }
+                Surface(color = MaterialTheme.colorScheme.background) {
+                    OverlayHost { BrigSettingsApp(settings, start ?: Screen.HOME) }
+                }
             }
         }
     }

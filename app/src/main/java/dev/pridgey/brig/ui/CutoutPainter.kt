@@ -2,24 +2,16 @@ package dev.pridgey.brig.ui
 
 import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
-import android.graphics.BitmapFactory
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -30,23 +22,25 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AutoFixNormal
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LayersClear
-import androidx.compose.material.icons.filled.AutoFixNormal
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -69,29 +63,30 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.unit.sp
 import dev.pridgey.brig.util.Segmenter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -100,6 +95,14 @@ import kotlin.math.max
 import kotlin.math.min
 
 private enum class Brush { ADD, ERASE }
+
+/**
+ * Fixed pictures for the painter, built on the CPU: [photo] as is, [base] in gray and dark for
+ * everything not chosen, and [found], a glow over what snapping can add. The chosen part is
+ * rebuilt after each edit. The screen only ever draws ordinary images on top of each other,
+ * which every phone's graphics handle the same way.
+ */
+private class Pictures(val photo: ImageBitmap, val base: ImageBitmap, val found: ImageBitmap?)
 
 /**
  * Choose what pops out in front of the clock by painting over it. With "Snap to objects" on, a
@@ -111,57 +114,81 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var analysis by remember { mutableStateOf<Segmenter.Analysis?>(null) }
+    var pictures by remember { mutableStateOf<Pictures?>(null) }
     var failed by remember { mutableStateOf(false) }
-    // The selection, as an alpha mask the size of the photo, drawn into with an Android canvas.
+    // The selection: a mask the size of the (painting-size) photo; only its alpha matters.
     var mask by remember { mutableStateOf<Bitmap?>(null) }
+    var chosen by remember { mutableStateOf<ImageBitmap?>(null) }
+    var coverage by remember { mutableIntStateOf(-1) }
     val history = remember { mutableStateListOf<Bitmap>() }
     var brush by remember { mutableStateOf(Brush.ADD) }
     var snap by remember { mutableStateOf(true) }
     var brushDp by remember { mutableFloatStateOf(28f) }
     var busy by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf<String?>(null) }
-    // What's on screen: an unchanging copy of the mask, replaced after every edit. (Android caches
-    // a bitmap's pixels for drawing, so a mask changed in place wouldn't visibly update.)
-    var shown by remember { mutableStateOf<ImageBitmap?>(null) }
-    var foundImg by remember { mutableStateOf<ImageBitmap?>(null) }
+    val tint = accent.toArgb()
 
-    fun publish(m: Bitmap) {
-        shown = m.copy(Bitmap.Config.ALPHA_8, false).asImageBitmap()
+    /** The chosen part in full color (transparent elsewhere), and how much of the photo it is. */
+    fun render(photo: Bitmap, m: Bitmap): Pair<ImageBitmap, Int> {
+        val out = photo.copy(Bitmap.Config.ARGB_8888, true)
+        val c = android.graphics.Canvas(out)
+        c.drawBitmap(m, 0f, 0f, android.graphics.Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) })
+        // A light accent tint, so the chosen part reads as "selected".
+        c.drawColor((tint and 0x00FFFFFF) or (0x30 shl 24), PorterDuff.Mode.SRC_ATOP)
+        return out.asImageBitmap() to percentChosen(m)
+    }
+
+    suspend fun refresh(m: Bitmap) {
+        val a = analysis ?: return
+        val (img, pct) = withContext(Dispatchers.Default) { render(a.photo, m) }
+        chosen = img
+        coverage = pct
     }
 
     LaunchedEffect(path) {
         // Anything going wrong here (even running out of memory) shows a message, never a crash.
         val result = runCatching {
             val a = Segmenter.analyze(ctx, path) ?: return@runCatching null
-            val m = withContext(Dispatchers.Default) {
-                val m = Bitmap.createBitmap(a.photo.width, a.photo.height, Bitmap.Config.ALPHA_8)
+            withContext(Dispatchers.Default) {
+                val w = a.photo.width
+                val h = a.photo.height
+                val m = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                 val c = android.graphics.Canvas(m)
-                val fill = android.graphics.Rect(0, 0, m.width, m.height)
                 // Start from the cut-out in use now, or what ML Kit picks on its own.
-                val existing = Segmenter.cached(ctx, path)?.let { Segmenter.decodeAtMost(it, maxOf(m.width, m.height)) }
+                val existing = Segmenter.cached(ctx, path)?.let { Segmenter.decodeAtMost(it, max(w, h)) }
                 when {
-                    existing != null -> { c.drawBitmap(existing, null, fill, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)); existing.recycle() }
+                    existing != null -> {
+                        c.drawBitmap(existing, null, android.graphics.Rect(0, 0, w, h), android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
+                        existing.recycle()
+                    }
                     a.foreground != null -> c.drawBitmap(a.foreground, 0f, 0f, null)
                 }
-                m
-            }
-            // Everything snapping could add, in one picture, to show as a glow.
-            val found = if (a.regions.isEmpty()) null else withContext(Dispatchers.Default) {
-                runCatching {
-                    val f = Bitmap.createBitmap(a.photo.width, a.photo.height, Bitmap.Config.ALPHA_8)
+                // The photo in gray and dark, for everything not chosen.
+                val base = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                android.graphics.Canvas(base).apply {
+                    drawColor(android.graphics.Color.BLACK)
+                    drawBitmap(a.photo, 0f, 0f, android.graphics.Paint().apply {
+                        alpha = 110
+                        colorFilter = android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix().apply { setSaturation(0f) })
+                    })
+                }
+                // Everything snapping could add, in the accent color.
+                val found = if (a.regions.isEmpty()) null else runCatching {
+                    val f = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                     val fc = android.graphics.Canvas(f)
-                    a.regions.forEach { r -> fc.drawBitmap(r.alphaBitmap(), r.x.toFloat(), r.y.toFloat(), null) }
+                    val p = android.graphics.Paint().apply { color = tint }
+                    a.regions.forEach { r -> fc.drawBitmap(r.alphaBitmap(), r.x.toFloat(), r.y.toFloat(), p) }
                     f.asImageBitmap()
                 }.getOrNull()
+                Triple(a, m, Pictures(a.photo.asImageBitmap(), base.asImageBitmap(), found))
             }
-            Triple(a, m, found)
         }.getOrNull()
         if (result == null) { failed = true; return@LaunchedEffect }
-        val (a, m, found) = result
+        val (a, m, pics) = result
         analysis = a
+        pictures = pics
         mask = m
-        foundImg = found
-        publish(m)
+        refresh(m)
         note = when {
             a.mode >= 2 -> "Object finding is off on this phone after a problem. Paint what should pop out."
             a.regions.isNotEmpty() -> "Found ${a.regions.size} object${if (a.regions.size == 1) "" else "s"}. Tap one to add it."
@@ -172,8 +199,8 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
 
     fun snapshot() {
         val m = mask ?: return
-        history += m.copy(Bitmap.Config.ALPHA_8, true)
-        if (history.size > 8) history.removeAt(0).recycle()
+        history += m.copy(Bitmap.Config.ARGB_8888, true)
+        if (history.size > 6) history.removeAt(0).recycle()
     }
 
     fun applyStroke(points: List<Offset>, radius: Float) {
@@ -181,60 +208,66 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
         val m = mask ?: return
         if (points.isEmpty()) return
         snapshot()
-        scope.launch(Dispatchers.Default) {
-          try {
-            val c = android.graphics.Canvas(m)
-            val strokePath = android.graphics.Path().apply {
-                moveTo(points[0].x, points[0].y)
-                points.drop(1).forEach { lineTo(it.x, it.y) }
-                if (points.size == 1) lineTo(points[0].x + 0.1f, points[0].y)
+        val erase = brush == Brush.ERASE
+        val snapping = snap
+        scope.launch {
+            val message = withContext(Dispatchers.Default) {
+                runCatching {
+                    val c = android.graphics.Canvas(m)
+                    val strokePath = android.graphics.Path().apply {
+                        moveTo(points[0].x, points[0].y)
+                        points.drop(1).forEach { lineTo(it.x, it.y) }
+                        if (points.size == 1) lineTo(points[0].x + 0.1f, points[0].y)
+                    }
+                    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeCap = android.graphics.Paint.Cap.ROUND
+                        strokeJoin = android.graphics.Paint.Join.ROUND
+                        strokeWidth = radius * 2f
+                        color = android.graphics.Color.BLACK
+                        maskFilter = BlurMaskFilter(max(1f, radius * 0.2f), BlurMaskFilter.Blur.NORMAL)
+                    }
+                    if (erase) {
+                        paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+                        c.drawPath(strokePath, paint)
+                        "Erased"
+                    } else {
+                        val hits = if (snapping) a.regions.filter { r -> points.any { p -> r.covers(p.x.toInt(), p.y.toInt()) } } else emptyList()
+                        if (hits.isNotEmpty()) {
+                            hits.forEach { r -> c.drawBitmap(r.alphaBitmap(), r.x.toFloat(), r.y.toFloat(), null) }
+                            if (hits.size == 1) "Added the object you touched" else "Added ${hits.size} objects you touched"
+                        } else {
+                            c.drawPath(strokePath, paint)
+                            if (snapping && a.regions.isNotEmpty()) "No object there, so the painted area was added" else "Added the painted area"
+                        }
+                    }
+                }.getOrElse { "That didn't work. Try a smaller area." }
             }
-            val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                style = android.graphics.Paint.Style.STROKE
-                strokeCap = android.graphics.Paint.Cap.ROUND
-                strokeJoin = android.graphics.Paint.Join.ROUND
-                strokeWidth = radius * 2f
-                maskFilter = BlurMaskFilter(max(1f, radius * 0.2f), BlurMaskFilter.Blur.NORMAL)
-            }
-            var message = ""
-            if (brush == Brush.ERASE) {
-                paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
-                c.drawPath(strokePath, paint)
-            } else {
-                val hits = if (snap) a.regions.filter { r -> points.any { p -> r.covers(p.x.toInt(), p.y.toInt()) } } else emptyList()
-                if (hits.isNotEmpty()) {
-                    hits.forEach { r -> c.drawBitmap(r.alphaBitmap(), r.x.toFloat(), r.y.toFloat(), null) }
-                    message = if (hits.size == 1) "Added the object you touched" else "Added ${hits.size} objects you touched"
-                } else {
-                    c.drawPath(strokePath, paint)
-                    message = if (snap && a.regions.isNotEmpty()) "No object there, so the painted area was added" else "Added the painted area"
-                }
-            }
-            if (brush == Brush.ERASE) message = "Erased"
-            withContext(Dispatchers.Main) {
-                note = message
-                publish(m)
-            }
-          } catch (e: Throwable) {
-            withContext(Dispatchers.Main) { note = "That didn't work. Try a smaller area." }
-          }
+            refresh(m)
+            note = message
         }
     }
 
     fun replaceMask(from: Bitmap?, message: String) {
         val m = mask ?: return
         snapshot()
-        m.eraseColor(android.graphics.Color.TRANSPARENT)
-        from?.let { android.graphics.Canvas(m).drawBitmap(it, 0f, 0f, null) }
-        note = message
-        publish(m)
+        scope.launch {
+            withContext(Dispatchers.Default) {
+                m.eraseColor(android.graphics.Color.TRANSPARENT)
+                from?.let { android.graphics.Canvas(m).drawBitmap(it, 0f, 0f, null) }
+            }
+            refresh(m)
+            note = message
+        }
     }
 
     fun undo() {
         val prev = history.removeLastOrNull() ?: return
         mask = prev
-        note = "Undone"
-        publish(prev)
+        scope.launch {
+            refresh(prev)
+            note = "Undone"
+        }
     }
 
     fun save() {
@@ -269,8 +302,12 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
                 Column(Modifier.weight(1f).padding(start = 4.dp)) {
                     Text("Pop-out", style = MaterialTheme.typography.titleLarge, color = Color.White)
                     Text(
-                        "Bright = in front of the clock",
-                        style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.7f),
+                        when {
+                            coverage < 0 -> "Bright = in front of the clock"
+                            coverage == 0 -> "Nothing pops out yet"
+                            else -> "$coverage% of the photo pops out"
+                        },
+                        style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.75f),
                     )
                 }
                 Button(onClick = ::save, enabled = mask != null && !busy, modifier = Modifier.padding(end = 8.dp)) {
@@ -280,16 +317,16 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
 
             Box(Modifier.fillMaxWidth().weight(1f)) {
                 val a = analysis
-                val shownMask = shown
-                if (a != null && shownMask != null) {
-                    val photoImg = remember(a.photo) { a.photo.asImageBitmap() }
+                val pics = pictures
+                val sel = chosen
+                if (a != null && pics != null && sel != null) {
                     PaintCanvas(
-                        photoImg, a.photo.width, a.photo.height, shownMask,
-                        found = foundImg.takeIf { snap && brush == Brush.ADD },
+                        a.photo.width, a.photo.height, pics.base, sel,
+                        found = pics.found.takeIf { snap && brush == Brush.ADD },
                         accent = accent, brushDp = brushDp, brush = brush, onStroke = ::applyStroke,
                     )
                     PopPreview(
-                        photoImg, shownMask, a.photo.width / a.photo.height.toFloat(),
+                        pics.photo, sel, a.photo.width / a.photo.height.toFloat(),
                         Modifier.align(Alignment.TopEnd).padding(12.dp),
                     )
                 } else {
@@ -349,7 +386,7 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(horizontal = 16.dp)) {
                     val chip = FilterChipDefaults.filterChipColors(labelColor = MaterialTheme.colorScheme.onSurface)
-                    val canSnap = (analysis?.regions?.isNotEmpty() == true)
+                    val canSnap = analysis?.regions?.isNotEmpty() == true
                     FilterChip(
                         selected = snap && canSnap, onClick = { snap = !snap }, colors = chip, enabled = canSnap,
                         label = { Text("Snap to objects") }, shape = CircleShape,
@@ -379,6 +416,27 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
     }
 }
 
+/** Share of the mask that's chosen, 0..100, sampled every 4th pixel for speed. */
+private fun percentChosen(m: Bitmap): Int {
+    val w = m.width
+    val row = IntArray(w)
+    var on = 0
+    var all = 0
+    var y = 0
+    while (y < m.height) {
+        m.getPixels(row, 0, w, 0, y, w, 1)
+        var x = 0
+        while (x < w) {
+            if ((row[x] ushr 24) > 127) on++
+            all++
+            x += 4
+        }
+        y += 4
+    }
+    if (all == 0 || on == 0) return 0
+    return max(1, (on * 100) / all)
+}
+
 @Composable
 private fun NoteFade(visible: Boolean, content: @Composable () -> Unit) {
     AnimatedVisibility(visible, enter = fadeIn(), exit = fadeOut()) { content() }
@@ -389,9 +447,9 @@ private fun NoteFade(visible: Boolean, content: @Composable () -> Unit) {
  * Tap to make it bigger.
  */
 @Composable
-private fun PopPreview(photo: ImageBitmap, mask: ImageBitmap, aspect: Float, modifier: Modifier) {
+private fun PopPreview(photo: ImageBitmap, chosen: ImageBitmap, aspect: Float, modifier: Modifier) {
     var big by remember { mutableStateOf(false) }
-    val w by androidx.compose.animation.core.animateDpAsState(if (big) 168.dp else 96.dp, label = "pip")
+    val w by animateDpAsState(if (big) 168.dp else 96.dp, label = "pip")
     val time = remember { java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("h:mm")) }
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
@@ -404,22 +462,16 @@ private fun PopPreview(photo: ImageBitmap, mask: ImageBitmap, aspect: Float, mod
         ) {
             Canvas(Modifier.fillMaxSize()) {
                 drawImage(photo, dstSize = IntSize(size.width.toInt(), size.height.toInt()))
-                drawRect(Color.Black.copy(alpha = 0.35f))
+                drawRect(Color.Black.copy(alpha = 0.4f))
             }
             Text(
                 time, color = Color.White,
-                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
-                fontSize = (w.value * 0.3f).sp,
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = w * 0.28f),
+                fontWeight = FontWeight.Bold,
+                fontSize = (w.value * 0.28f).sp,
+                modifier = Modifier.align(Alignment.Center),
             )
             Canvas(Modifier.fillMaxSize()) {
-                val dst = IntSize(size.width.toInt(), size.height.toInt())
-                drawIntoCanvas { c ->
-                    c.saveLayer(androidx.compose.ui.geometry.Rect(0f, 0f, size.width, size.height), Paint())
-                    drawImage(photo, dstSize = dst)
-                    drawImage(mask, dstSize = dst, blendMode = BlendMode.DstIn)
-                    c.restore()
-                }
+                drawImage(chosen, dstSize = IntSize(size.width.toInt(), size.height.toInt()))
             }
         }
         Text("Preview", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.8f), modifier = Modifier.padding(top = 4.dp))
@@ -427,15 +479,15 @@ private fun PopPreview(photo: ImageBitmap, mask: ImageBitmap, aspect: Float, mod
 }
 
 /**
- * The photo with the selection in full color and everything else gray and dark. Objects that
- * snapping can add glow faintly. One finger paints, two fingers zoom and move the view.
+ * The photo, gray and dark, with the chosen part in full color on top. Objects that snapping can
+ * add glow faintly. One finger paints, two fingers zoom and move the view.
  */
 @Composable
 private fun PaintCanvas(
-    photoImg: ImageBitmap,
     photoW: Int,
     photoH: Int,
-    maskImg: ImageBitmap,
+    base: ImageBitmap,
+    chosen: ImageBitmap,
     found: ImageBitmap?,
     accent: Color,
     brushDp: Float,
@@ -447,7 +499,6 @@ private fun PaintCanvas(
     var offset by remember { mutableStateOf(Offset.Zero) }
     val stroke = remember { mutableStateListOf<Offset>() }
     var finger by remember { mutableStateOf<Offset?>(null) }
-    val gray = remember { ColorFilter.colorMatrix(androidx.compose.ui.graphics.ColorMatrix().apply { setToSaturation(0f) }) }
 
     // Photo fitted to the view, then the user's zoom and move.
     val fit = if (size.width == 0) 1f else min(size.width / photoW.toFloat(), size.height / photoH.toFloat())
@@ -456,10 +507,10 @@ private fun PaintCanvas(
         (size.width - photoW * scale) / 2f + offset.x,
         (size.height - photoH * scale) / 2f + offset.y,
     )
-    val brushPx = with(androidx.compose.ui.platform.LocalDensity.current) { (brushDp / 2f).dp.toPx() }
+    val brushPx = with(LocalDensity.current) { (brushDp / 2f).dp.toPx() }
     // The gesture below outlives recompositions, so it reads these through state.
-    val brushNow by androidx.compose.runtime.rememberUpdatedState(brushPx)
-    val strokeNow by androidx.compose.runtime.rememberUpdatedState(onStroke)
+    val brushNow by rememberUpdatedState(brushPx)
+    val strokeNow by rememberUpdatedState(onStroke)
 
     Canvas(
         Modifier
@@ -469,7 +520,7 @@ private fun PaintCanvas(
                 awaitEachGesture {
                     val down = awaitFirstDown()
                     stroke.clear()
-                    stroke += toPhotoNow(down.position, size, photoW, photoH, zoom, offset)
+                    stroke += toPhoto(down.position, size, photoW, photoH, zoom, offset)
                     finger = down.position
                     var painting = true
                     do {
@@ -490,7 +541,7 @@ private fun PaintCanvas(
                             ev.changes.forEach { it.consume() }
                         } else if (painting) {
                             ev.changes.firstOrNull { it.pressed }?.let { ch ->
-                                stroke += toPhotoNow(ch.position, size, photoW, photoH, zoom, offset)
+                                stroke += toPhoto(ch.position, size, photoW, photoH, zoom, offset)
                                 finger = ch.position
                                 ch.consume()
                             }
@@ -507,19 +558,9 @@ private fun PaintCanvas(
     ) {
         translate(origin.x, origin.y) {
             scale(scale, scale, pivot = Offset.Zero) {
-                val bounds = androidx.compose.ui.geometry.Rect(0f, 0f, photoW.toFloat(), photoH.toFloat())
-                // Not chosen: gray and dark.
-                drawImage(photoImg, alpha = 0.4f, colorFilter = gray)
-                // What snapping can add: a faint glow.
-                found?.let { drawImage(it, colorFilter = ColorFilter.tint(accent.copy(alpha = 0.3f))) }
-                // Chosen: full color, lightly tinted.
-                drawIntoCanvas { c ->
-                    c.saveLayer(bounds, Paint())
-                    drawImage(photoImg)
-                    drawRect(accent.copy(alpha = 0.15f), size = bounds.size)
-                    drawImage(maskImg, blendMode = BlendMode.DstIn)
-                    c.restore()
-                }
+                drawImage(base)
+                found?.let { drawImage(it, alpha = 0.35f) }
+                drawImage(chosen)
                 if (stroke.isNotEmpty()) {
                     val p = Path().apply {
                         moveTo(stroke[0].x, stroke[0].y)
@@ -540,7 +581,7 @@ private fun PaintCanvas(
 }
 
 /** Screen point to photo pixels, from the current view state (gesture code can't read composition values). */
-private fun toPhotoNow(p: Offset, size: IntSize, w: Int, h: Int, zoom: Float, offset: Offset): Offset {
+private fun toPhoto(p: Offset, size: IntSize, w: Int, h: Int, zoom: Float, offset: Offset): Offset {
     val fit = min(size.width / w.toFloat(), size.height / h.toFloat())
     val s = fit * zoom
     val ox = (size.width - w * s) / 2f + offset.x
