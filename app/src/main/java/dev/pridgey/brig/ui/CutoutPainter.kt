@@ -113,19 +113,25 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
     var note by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(path) {
-        val a = Segmenter.analyze(ctx, path)
-        if (a == null) { failed = true; return@LaunchedEffect }
-        val m = withContext(Dispatchers.Default) {
-            val m = Bitmap.createBitmap(a.photo.width, a.photo.height, Bitmap.Config.ALPHA_8)
-            val c = android.graphics.Canvas(m)
-            // Start from the cut-out in use now, or what ML Kit picks on its own.
-            val existing = Segmenter.cached(ctx, path)?.let { BitmapFactory.decodeFile(it) }
-            when {
-                existing != null -> c.drawBitmap(existing, null, android.graphics.Rect(0, 0, m.width, m.height), null)
-                a.foreground != null -> c.drawBitmap(a.foreground, 0f, 0f, null)
+        // Anything going wrong here (even running out of memory) shows a message, never a crash.
+        val result = runCatching {
+            val a = Segmenter.analyze(ctx, path) ?: return@runCatching null
+            val m = withContext(Dispatchers.Default) {
+                val m = Bitmap.createBitmap(a.photo.width, a.photo.height, Bitmap.Config.ALPHA_8)
+                val c = android.graphics.Canvas(m)
+                val fill = android.graphics.Rect(0, 0, m.width, m.height)
+                // Start from the cut-out in use now, or what ML Kit picks on its own.
+                val existing = Segmenter.cached(ctx, path)?.let { Segmenter.decodeAtMost(it, maxOf(m.width, m.height)) }
+                when {
+                    existing != null -> { c.drawBitmap(existing, null, fill, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)); existing.recycle() }
+                    a.foreground != null -> c.drawBitmap(a.foreground, 0f, 0f, null)
+                }
+                m
             }
-            m
-        }
+            a to m
+        }.getOrNull()
+        if (result == null) { failed = true; return@LaunchedEffect }
+        val (a, m) = result
         analysis = a
         mask = m
         note = if (a.regions.isEmpty()) "Nothing found automatically. Paint what should pop out." else null
@@ -143,6 +149,7 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
         if (points.isEmpty()) return
         snapshot()
         scope.launch(Dispatchers.Default) {
+          try {
             val c = android.graphics.Canvas(m)
             val strokePath = android.graphics.Path().apply {
                 moveTo(points[0].x, points[0].y)
@@ -174,6 +181,9 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
                 note = message
                 version++
             }
+          } catch (e: Throwable) {
+            withContext(Dispatchers.Main) { note = "That didn't work. Try a smaller area." }
+          }
         }
     }
 
@@ -192,20 +202,27 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
     }
 
     fun save() {
-        val a = analysis ?: return
         val m = mask ?: return
         busy = true
         scope.launch {
-            withContext(Dispatchers.Default) {
-                val out = Bitmap.createBitmap(a.photo.width, a.photo.height, Bitmap.Config.ARGB_8888)
-                val c = android.graphics.Canvas(out)
-                c.drawBitmap(a.photo, 0f, 0f, null)
-                c.drawBitmap(m, 0f, 0f, android.graphics.Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) })
-                Segmenter.saveGuided(ctx, path, out)
-                out.recycle()
+            val ok = withContext(Dispatchers.Default) {
+                runCatching {
+                    // Made at the size the lock screen shows the photo, with the painted mask scaled up.
+                    val full = Segmenter.decode(path) ?: return@runCatching false
+                    val out = full.copy(Bitmap.Config.ARGB_8888, true)
+                    full.recycle()
+                    val c = android.graphics.Canvas(out)
+                    val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG).apply {
+                        xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+                    }
+                    c.drawBitmap(m, null, android.graphics.Rect(0, 0, out.width, out.height), paint)
+                    Segmenter.saveGuided(ctx, path, out)
+                    out.recycle()
+                    true
+                }.getOrDefault(false)
             }
             busy = false
-            onSaved()
+            if (ok) onSaved() else note = "Couldn't save the pop-out. Try again."
         }
     }
 

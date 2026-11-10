@@ -41,6 +41,9 @@ import dev.pridgey.brig.service.BrigAccessibilityService
 import dev.pridgey.brig.service.BrigNotificationListener
 import dev.pridgey.brig.service.LockService
 import dev.pridgey.brig.util.Device
+import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.material.icons.filled.ContentCopy
 import dev.pridgey.brig.util.Notifications
 import java.time.Instant
 import java.time.ZoneId
@@ -161,6 +164,25 @@ fun DiagnosticsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: ()
             }
         }
         item { RestrictedSettingsHint() }
+        item {
+            var crash by remember { mutableStateOf(dev.pridgey.brig.data.CrashLog.read(ctx)) }
+            crash?.let { text ->
+                SettingsGroup("Last crash") {
+                    Text(
+                        text.lines().take(14).joinToString("\n"),
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+                    ClickRow("Copy crash report", "Paste it into a bug report or message", Icons.Filled.ContentCopy) {
+                        val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("Brig crash", text))
+                        android.widget.Toast.makeText(ctx, "Copied", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    ClickRow("Clear", icon = Icons.Filled.DeleteSweep) { dev.pridgey.brig.data.CrashLog.clear(ctx); crash = null }
+                }
+            }
+        }
         item {
             SettingsGroup("Recent activity") {
                 if (log.isEmpty()) Note("Nothing yet. Lock your phone once and come back.")

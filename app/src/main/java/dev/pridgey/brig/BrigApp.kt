@@ -16,6 +16,7 @@ class BrigApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        dev.pridgey.brig.data.CrashLog.install(this)
         settingsRepo = SettingsRepository(this, appScope)
         Notifications.createChannels(this)
         dev.pridgey.brig.data.PhotoRotator.restore(this)

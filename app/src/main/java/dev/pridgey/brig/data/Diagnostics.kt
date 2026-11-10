@@ -56,3 +56,32 @@ object DiagLog {
             log.none { it.event == DiagEvent.LOCK_SHOWN && it.at in off.at..(off.at + windowMs) }
         }
 }
+
+/**
+ * Keeps the last crash's details on the phone, so a crash can be reported and fixed. Records only
+ * the error and where it happened in Brig's code, never any of the user's content.
+ */
+object CrashLog {
+    private fun file(ctx: Context) = java.io.File(ctx.filesDir, "last_crash.txt")
+
+    fun install(ctx: Context) {
+        val app = ctx.applicationContext
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, e ->
+            runCatching {
+                val trace = java.io.StringWriter().also { e.printStackTrace(java.io.PrintWriter(it)) }.toString()
+                file(app).writeText(
+                    "Brig ${dev.pridgey.brig.BuildConfig.VERSION_NAME} · Android ${android.os.Build.VERSION.RELEASE} · ${android.os.Build.MODEL}\n" +
+                        "${java.time.ZonedDateTime.now()} · thread ${thread.name}\n\n" + trace.take(16_000),
+                )
+            }
+            previous?.uncaughtException(thread, e)
+        }
+    }
+
+    fun read(ctx: Context): String? = runCatching { file(ctx).takeIf { it.exists() }?.readText() }.getOrNull()
+
+    fun clear(ctx: Context) {
+        file(ctx).delete()
+    }
+}

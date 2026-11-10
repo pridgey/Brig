@@ -90,26 +90,41 @@ object Segmenter {
         fun alphaBitmap(): Bitmap = alphaOf(mask, width, height)
     }
 
-    /** A photo, decoded the way the lock screen decodes it, with everything found in it. */
+    /**
+     * A smaller copy of a photo for painting on, with everything found in it. The cut-out itself
+     * is made at full size when saved, so this only has to be big enough to see and touch.
+     */
     class Analysis(val photo: Bitmap, val regions: List<Region>, val foreground: Bitmap?)
 
-    /** Finds each separate subject in the photo. Null if ML Kit is unavailable. */
+    /** Longest side of the photo used for painting. Keeps memory low; plenty for a phone screen. */
+    private const val PAINT_DIM = 1280
+
+    /** Finds each separate subject in the photo. Null if the photo can't be read or ML Kit fails. */
     suspend fun analyze(ctx: Context, path: String): Analysis? = lock.withLock {
         withContext(Dispatchers.Default) {
-            val bmp = decode(path) ?: return@withContext null
-            val segmenter = SubjectSegmentation.getClient(
-                SubjectSegmenterOptions.Builder()
-                    .enableForegroundConfidenceMask()
-                    .enableMultipleSubjects(SubjectSegmenterOptions.SubjectResultOptions.Builder().enableConfidenceMask().build())
-                    .build(),
-            )
+            val bmp = try {
+                decodeAtMost(path, PAINT_DIM)
+            } catch (e: Throwable) {
+                null
+            } ?: return@withContext null
+            val segmenter = try {
+                SubjectSegmentation.getClient(
+                    SubjectSegmenterOptions.Builder()
+                        .enableForegroundConfidenceMask()
+                        .enableMultipleSubjects(SubjectSegmenterOptions.SubjectResultOptions.Builder().enableConfidenceMask().build())
+                        .build(),
+                )
+            } catch (e: Throwable) {
+                return@withContext Analysis(bmp, emptyList(), null)
+            }
             try {
                 runCatching {
                     ModuleInstall.getClient(ctx).installModules(ModuleInstallRequest.newBuilder().addApi(segmenter).build()).await()
                 }
                 val r = segmenter.process(InputImage.fromBitmap(bmp, 0)).await()
-                val regions = r.subjects.mapNotNull { sub ->
+                val regions = r.subjects.orEmpty().mapNotNull { sub ->
                     val buf = sub.confidenceMask ?: return@mapNotNull null
+                    if (sub.width <= 0 || sub.height <= 0) return@mapNotNull null
                     val arr = FloatArray(sub.width * sub.height)
                     buf.rewind()
                     buf.get(arr, 0, minOf(arr.size, buf.remaining()))
@@ -122,17 +137,42 @@ object Segmenter {
                     alphaOf(arr, bmp.width, bmp.height)
                 }
                 Analysis(bmp, regions, fg)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Out of memory or ML Kit trouble: still let the user paint by hand.
                 Analysis(bmp, emptyList(), null)
             } finally {
-                segmenter.close()
+                runCatching { segmenter.close() }
             }
         }
     }
 
+    /** An alpha-only bitmap from 0..1 values, one byte per pixel. */
     private fun alphaOf(mask: FloatArray, w: Int, h: Int): Bitmap {
-        val px = IntArray(w * h) { i -> ((mask[i].coerceIn(0f, 1f) * 255f).toInt() shl 24) or 0xFFFFFF }
-        return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ALPHA_8)
+        val row = out.rowBytes
+        val bytes = ByteArray(row * h)
+        for (y in 0 until h) {
+            val src = y * w
+            val dst = y * row
+            for (x in 0 until w) bytes[dst + x] = (mask[src + x].coerceIn(0f, 1f) * 255f).toInt().toByte()
+        }
+        out.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(bytes))
+        return out
+    }
+
+    /** Decodes [path] with its longest side at most [maxDim] pixels. */
+    fun decodeAtMost(path: String, maxDim: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxDim) sample *= 2
+        val bmp = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+        val longest = maxOf(bmp.width, bmp.height)
+        if (longest <= maxDim) return bmp
+        val f = maxDim.toFloat() / longest
+        return Bitmap.createScaledBitmap(bmp, (bmp.width * f).toInt().coerceAtLeast(1), (bmp.height * f).toInt().coerceAtLeast(1), true)
+            .also { if (it !== bmp) bmp.recycle() }
     }
 
     /** Decodes [path] at the size cut-outs are made at. */
