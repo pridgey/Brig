@@ -20,6 +20,8 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -40,6 +42,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixNormal
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Gesture
 import androidx.compose.material.icons.filled.LayersClear
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -87,6 +90,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.pridgey.brig.util.EdgeRefine
 import dev.pridgey.brig.util.Segmenter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -109,6 +113,7 @@ private class Pictures(val photo: ImageBitmap, val base: ImageBitmap, val found:
  * stroke that touches something ML Kit found adds that whole thing; a stroke that touches nothing
  * found, or any stroke with snapping off, adds just the painted area. The eraser trims by hand.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: () -> Unit) {
     val ctx = LocalContext.current
@@ -123,6 +128,9 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
     val history = remember { mutableStateListOf<Bitmap>() }
     var brush by remember { mutableStateOf(Brush.ADD) }
     var snap by remember { mutableStateOf(true) }
+    var smart by remember { mutableStateOf(true) }
+    // The photo's pixels, read once, for smart edges.
+    val pixelsRef = remember { arrayOfNulls<IntArray>(1) }
     var brushDp by remember { mutableFloatStateOf(28f) }
     var busy by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf<String?>(null) }
@@ -217,6 +225,7 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
         snapshot()
         val erase = brush == Brush.ERASE
         val snapping = snap
+        val tighten = smart
         scope.launch {
             val message = withContext(Dispatchers.Default) {
                 runCatching {
@@ -243,6 +252,21 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
                         if (hits.isNotEmpty()) {
                             hits.forEach { r -> c.drawBitmap(r.alphaBitmap(), r.x.toFloat(), r.y.toFloat(), null) }
                             if (hits.size == 1) "Added the object you touched" else "Added ${hits.size} objects you touched"
+                        } else if (tighten) {
+                            val w = a.photo.width
+                            val h = a.photo.height
+                            val px = pixelsRef[0] ?: IntArray(w * h).also { a.photo.getPixels(it, 0, w, 0, 0, w, h); pixelsRef[0] = it }
+                            val res = EdgeRefine.refine(px, w, h, points.map { it.x to it.y }, radius)
+                            if (res != null && res.tightened) {
+                                val colors = IntArray(res.alpha.size) { i -> (res.alpha[i].coerceIn(0f, 1f) * 255f).toInt() shl 24 }
+                                val piece = Bitmap.createBitmap(colors, res.width, res.height, Bitmap.Config.ARGB_8888)
+                                c.drawBitmap(piece, res.x0.toFloat(), res.y0.toFloat(), null)
+                                piece.recycle()
+                                "Tightened to the edges · kept ${(res.kept * 100).toInt().coerceIn(1, 100)}% of your stroke"
+                            } else {
+                                c.drawPath(strokePath, paint)
+                                "No clear edges there, so the painted area was added"
+                            }
                         } else {
                             c.drawPath(strokePath, paint)
                             if (snapping && a.regions.isNotEmpty()) "No object there, so the painted area was added" else "Added the painted area"
@@ -393,8 +417,16 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
                         Box(Modifier.size((brushDp / 2f).dp).background(accent, CircleShape))
                     }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(horizontal = 16.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                ) {
                     val chip = FilterChipDefaults.filterChipColors(labelColor = MaterialTheme.colorScheme.onSurface)
+                    FilterChip(
+                        selected = smart, onClick = { smart = !smart }, colors = chip,
+                        label = { Text("Smart edges") }, shape = CircleShape,
+                        leadingIcon = { Icon(Icons.Filled.Gesture, null, Modifier.size(18.dp)) },
+                    )
                     val canSnap = analysis?.regions?.isNotEmpty() == true
                     FilterChip(
                         selected = snap && canSnap, onClick = { snap = !snap }, colors = chip, enabled = canSnap,
@@ -414,7 +446,10 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
                 Text(
                     when {
                         brush == Brush.ERASE -> "Paint over anything that shouldn't pop out."
+                        snap && analysis?.regions?.isNotEmpty() == true && smart ->
+                            "Tap a glowing object to add all of it. Elsewhere, paint along what should pop out and smart edges trim each stroke to it."
                         snap && analysis?.regions?.isNotEmpty() == true -> "Tap a glowing object to add all of it, or paint any area. Pinch to zoom."
+                        smart -> "Paint along what should pop out; smart edges trim each stroke to it. Pinch with two fingers to zoom."
                         else -> "Paint over what should pop out. Pinch with two fingers to zoom."
                     },
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
