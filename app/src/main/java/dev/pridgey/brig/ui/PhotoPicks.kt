@@ -579,7 +579,8 @@ private fun PhotoLookEditor(
 
     val phone = rememberPhoneSize()
     val visible = remember { MutableTransitionState(false).apply { targetState = true } }
-    Dialog(
+    // While painting a pop-out, the editor steps aside entirely so its previews free their memory.
+    if (painting == null) Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {

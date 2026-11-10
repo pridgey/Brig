@@ -290,6 +290,11 @@ private fun HomeScreen(settings: BrigSettings, update: SettingsUpdate, navigate:
     val updateState by Updater.state.collectAsStateWithLifecycle()
     val (status, refresh) = rememberSetupStatus()
     val setupDone = status.essentialsPending == 0
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val crashVersion by dev.pridgey.brig.data.CrashLog.changes.collectAsStateWithLifecycle()
+    val problem by androidx.compose.runtime.produceState<String?>(null, crashVersion) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { dev.pridgey.brig.data.CrashLog.report(ctx) }
+    }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -305,6 +310,13 @@ private fun HomeScreen(settings: BrigSettings, update: SettingsUpdate, navigate:
                     "Update ready: ${r.tag}", "Tap to download and install",
                     Icons.Filled.Download, MaterialTheme.colorScheme.tertiaryContainer,
                 ) { navigate(Screen.UPDATES) }
+            }
+        }
+
+        // After an unexpected close, offer the report right here so it's easy to send.
+        problem?.let { text ->
+            item {
+                ProblemReport(text, title = "Brig closed unexpectedly", onDismiss = { dev.pridgey.brig.data.CrashLog.dismiss(ctx) })
             }
         }
 

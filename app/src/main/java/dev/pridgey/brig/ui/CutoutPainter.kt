@@ -134,7 +134,12 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
         val (a, m) = result
         analysis = a
         mask = m
-        note = if (a.regions.isEmpty()) "Nothing found automatically. Paint what should pop out." else null
+        note = when {
+            a.mode >= 2 -> "Object finding is off on this phone after a problem. Paint what should pop out."
+            a.regions.isEmpty() && a.foreground != null -> "Paint what should pop out. Auto picks the main subject."
+            a.regions.isEmpty() -> "Nothing found automatically. Paint what should pop out."
+            else -> null
+        }
     }
 
     fun snapshot() {

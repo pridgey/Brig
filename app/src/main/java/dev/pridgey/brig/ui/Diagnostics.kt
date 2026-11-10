@@ -41,6 +41,8 @@ import dev.pridgey.brig.service.BrigAccessibilityService
 import dev.pridgey.brig.service.BrigNotificationListener
 import dev.pridgey.brig.service.LockService
 import dev.pridgey.brig.util.Device
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.material.icons.filled.ContentCopy
@@ -165,23 +167,9 @@ fun DiagnosticsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: ()
         }
         item { RestrictedSettingsHint() }
         item {
-            var crash by remember { mutableStateOf(dev.pridgey.brig.data.CrashLog.read(ctx)) }
-            crash?.let { text ->
-                SettingsGroup("Last crash") {
-                    Text(
-                        text.lines().take(14).joinToString("\n"),
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                    )
-                    ClickRow("Copy crash report", "Paste it into a bug report or message", Icons.Filled.ContentCopy) {
-                        val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("Brig crash", text))
-                        android.widget.Toast.makeText(ctx, "Copied", android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                    ClickRow("Clear", icon = Icons.Filled.DeleteSweep) { dev.pridgey.brig.data.CrashLog.clear(ctx); crash = null }
-                }
-            }
+            val version by dev.pridgey.brig.data.CrashLog.changes.collectAsState()
+            val report = remember(version) { dev.pridgey.brig.data.CrashLog.report(ctx, includeSeen = true) }
+            report?.let { text -> ProblemReport(text) }
         }
         item {
             SettingsGroup("Recent activity") {
@@ -211,4 +199,23 @@ private fun time(at: Long): String {
     val z = Instant.ofEpochMilli(at).atZone(ZoneId.systemDefault())
     val rel = DateUtils.getRelativeTimeSpanString(at, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE)
     return z.format(DateTimeFormatter.ofPattern("EEE h:mm:ss a")) + " · " + rel
+}
+
+/** A crash or unexpected close, with a way to send it on. */
+@Composable
+internal fun ProblemReport(text: String, title: String = "Recent problems", onDismiss: (() -> Unit)? = null) {
+    val ctx = LocalContext.current
+    var expanded by remember { mutableStateOf(false) }
+    SettingsGroup(title) {
+        Text(
+            text.lines().let { if (expanded) it else it.take(8) }.joinToString("\n"),
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp).clickable { expanded = !expanded },
+        )
+        ClickRow("Copy report", "Paste it into a message to get it fixed", Icons.Filled.ContentCopy) {
+            dev.pridgey.brig.data.CrashLog.copy(ctx, text)
+        }
+        onDismiss?.let { ClickRow("Dismiss", icon = Icons.Filled.Close, onClick = it) }
+    }
 }

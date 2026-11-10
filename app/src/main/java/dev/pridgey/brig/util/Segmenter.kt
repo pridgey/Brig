@@ -94,7 +94,29 @@ object Segmenter {
      * A smaller copy of a photo for painting on, with everything found in it. The cut-out itself
      * is made at full size when saved, so this only has to be big enough to see and touch.
      */
-    class Analysis(val photo: Bitmap, val regions: List<Region>, val foreground: Bitmap?)
+    class Analysis(val photo: Bitmap, val regions: List<Region>, val foreground: Bitmap?, val mode: Int = 0)
+
+    /**
+     * How much object finding the painter asks for: 0 = each object separately, 1 = just the
+     * main subject, 2 = none (paint by hand). If the app dies mid-analysis, the next try steps
+     * down a level, so a phone where ML Kit crashes can't crash the same way twice.
+     */
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("segmenter", Context.MODE_PRIVATE)
+
+    private fun safeMode(ctx: Context): Int {
+        val p = prefs(ctx)
+        var mode = p.getInt("mode", 0)
+        if (p.getBoolean("running", false)) {
+            mode = (mode + 1).coerceAtMost(2)
+            p.edit().putInt("mode", mode).putBoolean("running", false).commit()
+        }
+        return mode
+    }
+
+    private fun running(ctx: Context, on: Boolean) {
+        // commit, not apply: it has to be on disk before a crash could happen.
+        prefs(ctx).edit().putBoolean("running", on).commit()
+    }
 
     /** Longest side of the photo used for painting. Keeps memory low; plenty for a phone screen. */
     private const val PAINT_DIM = 1280
@@ -107,21 +129,25 @@ object Segmenter {
             } catch (e: Throwable) {
                 null
             } ?: return@withContext null
+            val mode = safeMode(ctx)
+            if (mode >= 2) return@withContext Analysis(bmp, emptyList(), null, mode)
             val segmenter = try {
-                SubjectSegmentation.getClient(
-                    SubjectSegmenterOptions.Builder()
-                        .enableForegroundConfidenceMask()
-                        .enableMultipleSubjects(SubjectSegmenterOptions.SubjectResultOptions.Builder().enableConfidenceMask().build())
-                        .build(),
-                )
+                val options = SubjectSegmenterOptions.Builder().enableForegroundConfidenceMask()
+                if (mode == 0) options.enableMultipleSubjects(SubjectSegmenterOptions.SubjectResultOptions.Builder().enableConfidenceMask().build())
+                SubjectSegmentation.getClient(options.build())
             } catch (e: Throwable) {
-                return@withContext Analysis(bmp, emptyList(), null)
+                return@withContext Analysis(bmp, emptyList(), null, mode)
             }
             try {
                 runCatching {
                     ModuleInstall.getClient(ctx).installModules(ModuleInstallRequest.newBuilder().addApi(segmenter).build()).await()
                 }
-                val r = segmenter.process(InputImage.fromBitmap(bmp, 0)).await()
+                running(ctx, true)
+                val r = try {
+                    segmenter.process(InputImage.fromBitmap(bmp, 0)).await()
+                } finally {
+                    running(ctx, false)
+                }
                 val regions = r.subjects.orEmpty().mapNotNull { sub ->
                     val buf = sub.confidenceMask ?: return@mapNotNull null
                     if (sub.width <= 0 || sub.height <= 0) return@mapNotNull null
@@ -136,10 +162,10 @@ object Segmenter {
                     buf.get(arr, 0, minOf(arr.size, buf.remaining()))
                     alphaOf(arr, bmp.width, bmp.height)
                 }
-                Analysis(bmp, regions, fg)
+                Analysis(bmp, regions, fg, mode)
             } catch (e: Throwable) {
                 // Out of memory or ML Kit trouble: still let the user paint by hand.
-                Analysis(bmp, emptyList(), null)
+                Analysis(bmp, emptyList(), null, mode)
             } finally {
                 runCatching { segmenter.close() }
             }
