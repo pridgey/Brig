@@ -580,13 +580,10 @@ private fun PhotoLookEditor(
     val phone = rememberPhoneSize()
     val visible = remember { MutableTransitionState(false).apply { targetState = true } }
     // While painting a pop-out, the editor steps aside entirely so its previews free their memory.
-    if (painting == null) Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
+    if (painting == null) FullScreenDialog(onDismiss) {
         AnimatedVisibility(visible, enter = fadeIn() + slideInVertically { it / 12 }) {
-            Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxSize()) {
-                Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+            run {
+                Box(Modifier.fillMaxSize()) {
                     Column(Modifier.fillMaxSize()) {
                         EditorTopBar(
                             title = if (req.group && together) "Adjusting ${paths.size} photos" else "Photo ${page + 1} of ${paths.size}",

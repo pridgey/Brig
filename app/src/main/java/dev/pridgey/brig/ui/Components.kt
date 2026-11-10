@@ -1,6 +1,9 @@
 package dev.pridgey.brig.ui
 
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -499,5 +502,48 @@ fun SpinningBadge(size: Dp, color: Color, polygon: androidx.graphics.shapes.Roun
     Box(Modifier.size(size), contentAlignment = Alignment.Center) {
         Box(Modifier.fillMaxSize().clip(PolygonShape(polygon, r)).background(color))
         content()
+    }
+}
+
+/**
+ * A dialog that covers the whole screen, edge to edge, with its content kept clear of the status
+ * bar, navigation bar and camera cutout. Dialog windows don't always receive the system bar sizes,
+ * so this also takes them from the app's own window and uses whichever is larger.
+ */
+@Composable
+fun FullScreenDialog(
+    onDismiss: () -> Unit,
+    color: Color = MaterialTheme.colorScheme.surface,
+    content: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit,
+) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    val density = LocalDensity.current
+    val bars = remember(view) {
+        val types = androidx.core.view.WindowInsetsCompat.Type.systemBars() or androidx.core.view.WindowInsetsCompat.Type.displayCutout()
+        val i = androidx.core.view.ViewCompat.getRootWindowInsets(view)?.getInsets(types)
+        with(density) {
+            androidx.compose.foundation.layout.WindowInsets(
+                left = (i?.left ?: 0).toDp(), top = (i?.top ?: 0).toDp(),
+                right = (i?.right ?: 0).toDp(), bottom = (i?.bottom ?: 0).toDp(),
+            )
+        }
+    }
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        // Make the dialog's window fill the screen, not just wrap its content.
+        val window = (androidx.compose.ui.platform.LocalView.current.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window
+        androidx.compose.runtime.SideEffect {
+            window?.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+        Surface(color = color, modifier = Modifier.fillMaxSize()) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing.union(bars)),
+                content = content,
+            )
+        }
     }
 }
