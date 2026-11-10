@@ -70,7 +70,25 @@ object Segmenter {
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("segmenter", Context.MODE_PRIVATE)
 
     /** Cut-outs the user chose by painting. Kept apart from the automatic cache, which can be cleared. */
-    private fun guidedDir(ctx: Context) = File(ctx.filesDir, "cutouts_guided").apply { mkdirs() }
+    private fun guidedDir(ctx: Context): File {
+        val dir = File(ctx.filesDir, "cutouts_guided").apply { mkdirs() }
+        if (!guidedChecked) {
+            guidedChecked = true
+            // Versions up to 1.19 saved painted cut-outs without transparency (the whole photo,
+            // solid). Clear those once so the photo goes back to its automatic cut-out.
+            val p = prefs(ctx)
+            if (!p.getBoolean("guided_v2", false)) {
+                dir.listFiles()?.forEach { it.delete() }
+                p.edit().putBoolean("guided_v2", true).apply()
+            }
+        }
+        return dir
+    }
+
+    @Volatile private var guidedChecked = false
+
+    /** True if [cutoutPath] is one the user painted, rather than ML Kit's automatic pick. */
+    fun isGuided(cutoutPath: String) = File(cutoutPath).parentFile?.name == "cutouts_guided"
 
     private fun guidedFiles(ctx: Context, path: String): List<File> {
         val k = key(path) + "_"

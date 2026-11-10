@@ -256,7 +256,7 @@ fun LiveEffectsSettings(a: Appearance, set: ((Appearance) -> Appearance) -> Unit
                 }
                 SwitchRow(
                     "Keep the clock clear",
-                    "Skip the effect on photos where the subject would hide most of the clock",
+                    "Skip the automatic effect on photos where the subject would hide most of the clock. Pop-outs you paint always show.",
                     a.depthKeepClock,
                 ) { v -> set { it.copy(depthKeepClock = v) } }
             }

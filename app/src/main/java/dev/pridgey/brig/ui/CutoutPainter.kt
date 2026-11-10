@@ -131,6 +131,8 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
     /** The chosen part in full color (transparent elsewhere), and how much of the photo it is. */
     fun render(photo: Bitmap, m: Bitmap): Pair<ImageBitmap, Int> {
         val out = photo.copy(Bitmap.Config.ARGB_8888, true)
+        // A copy of a JPEG is marked "no transparency", which would make cutting away do nothing.
+        out.setHasAlpha(true)
         val c = android.graphics.Canvas(out)
         c.drawBitmap(m, 0f, 0f, android.graphics.Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) })
         // A light accent tint, so the chosen part reads as "selected".
@@ -162,6 +164,11 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
                         existing.recycle()
                     }
                     a.foreground != null -> c.drawBitmap(a.foreground, 0f, 0f, null)
+                }
+                // A solid saved cut-out (the whole photo) is never what was meant: start from the automatic pick.
+                if (existing != null && percentChosen(m) >= 99) {
+                    m.eraseColor(android.graphics.Color.TRANSPARENT)
+                    a.foreground?.let { c.drawBitmap(it, 0f, 0f, null) }
                 }
                 // The photo in gray and dark, for everything not chosen.
                 val base = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -280,6 +287,8 @@ fun CutoutPainter(path: String, accent: Color, onSaved: () -> Unit, onDismiss: (
                     val full = Segmenter.decode(path) ?: return@runCatching false
                     val out = full.copy(Bitmap.Config.ARGB_8888, true)
                     full.recycle()
+                    // Without this, a JPEG's copy stays solid and the whole photo would be saved.
+                    out.setHasAlpha(true)
                     val c = android.graphics.Canvas(out)
                     val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG).apply {
                         xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)

@@ -229,7 +229,8 @@ fun DepthForeground(
     // Skip the pop-out for this photo when the subject would hide too much of the clock.
     var layerSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
     val clockBounds = clock?.bounds
-    val keepClock = appearance.depthKeepClock && clock != null
+    // A pop-out the user painted is what they chose, so it's never second-guessed.
+    val keepClock = appearance.depthKeepClock && clock != null && !dev.pridgey.brig.util.Segmenter.isGuided(cutoutPath)
     val show = remember(img, clockBounds, layerSize, keepClock, cfg.zoom, cfg.panX, cfg.panY) {
         when {
             !keepClock -> true
