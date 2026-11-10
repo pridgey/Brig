@@ -16,7 +16,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Person
@@ -125,7 +124,10 @@ fun PhotoSourceSettings(settings: BrigSettings, update: SettingsUpdate) {
             val paths = withContext(Dispatchers.IO) {
                 uris.mapIndexedNotNull { i, u -> copyInto(ctx, u, "album", "pick_${System.currentTimeMillis()}_$i.img") }
             }
+            val first = cfg.albumPaths.isEmpty()
             set { it.copy(albumPaths = it.albumPaths + paths) }
+            // The first picks should show up right away.
+            if (first && paths.isNotEmpty() && cfg.source == PhotoSource.ALBUM) rotateNow(cfg.copy(albumPaths = paths))
         }
     }
     val mediaPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
@@ -144,16 +146,11 @@ fun PhotoSourceSettings(settings: BrigSettings, update: SettingsUpdate) {
         }
         when (cfg.source) {
             PhotoSource.SINGLE -> Unit
-            PhotoSource.ALBUM -> {
-                Note("${cfg.albumPaths.size} photos picked.")
-                ClickRow("Add photos", icon = Icons.Filled.AddPhotoAlternate) {
-                    albumPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                }
-                if (cfg.albumPaths.isNotEmpty()) ClickRow("Clear picks", icon = Icons.Filled.Close) {
-                    cfg.albumPaths.forEach { File(it).delete() }
-                    set { it.copy(albumPaths = emptyList()) }
-                }
-            }
+            PhotoSource.ALBUM -> AlbumPicks(
+                settings, update,
+                onAdd = { albumPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                rotate = { rotateNow(it) },
+            )
             PhotoSource.ON_THIS_DAY -> if (!Memories.hasPermission(ctx)) {
                 ClickRow("Allow photo access", "To find photos from this date in past years", Icons.Filled.PhotoLibrary) {
                     mediaPermission.launch(Memories.permission())

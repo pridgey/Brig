@@ -165,6 +165,7 @@ import androidx.compose.material.icons.filled.Person
 import dev.pridgey.brig.data.BackgroundType
 import dev.pridgey.brig.data.PhotoRotator
 import dev.pridgey.brig.data.PhotoSource
+import dev.pridgey.brig.data.withLookFor
 import dev.pridgey.brig.data.Sun
 import dev.pridgey.brig.data.Sleep
 
@@ -232,7 +233,7 @@ private fun LockScreenContent(rawSettings: BrigSettings, controller: LockControl
     val appearance = base.copy(
         background = effects.background ?: if (effects.imagePath != null) BackgroundType.IMAGE else base.background,
         imagePath = photoPath,
-    )
+    ).let { it.withLookFor(settings.photos, photoPath) }
     // Album art takes over the background while music plays.
     val media by MediaRepo.state.collectAsState()
     val albumArt = media?.takeIf { appearance.albumArtBackground && it.playing && !effects.bedside }?.art
@@ -967,6 +968,7 @@ private fun LockMockContent(settings: BrigSettings) {
     val rotated by PhotoRotator.current.collectAsState()
     val rotatedPath = rotated?.path?.takeIf { settings.photos.source != PhotoSource.SINGLE }
     val a = settings.appearance.let { if (rotatedPath != null) it.copy(imagePath = rotatedPath) else it }
+        .let { it.withLookFor(settings.photos, it.imagePath) }
     val cut = rememberCutout(a.imagePath, a.depth && a.background == BackgroundType.IMAGE && a.imagePath != null)
     val clockTracker = remember { dev.pridgey.brig.util.ClockTracker() }
     val now by rememberNow(a.showSeconds)

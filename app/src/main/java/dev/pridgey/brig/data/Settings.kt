@@ -228,7 +228,35 @@ data class PhotoSourceConfig(
     val unsplashKey: String = "",
     val unsplashQuery: String = "nature",
     val subreddit: String = "EarthPorn",
+    /** Picked photos (by path) that have their own look instead of the shared one. */
+    val looks: Map<String, PhotoLook> = emptyMap(),
+) {
+    /** The look [path] should be shown with, or null to use the shared look. */
+    fun lookFor(path: String?): PhotoLook? = path?.let { looks[it] }
+
+    /** Drops [paths] from the picks along with their looks. */
+    fun without(paths: Collection<String>): PhotoSourceConfig {
+        val gone = paths.toSet()
+        return copy(albumPaths = albumPaths.filter { it !in gone }, looks = looks - gone)
+    }
+}
+
+/** Everything about how one photo is shown: color tweaks, framing, blur and dim. */
+@Serializable
+data class PhotoLook(
+    val photo: PhotoConfig = PhotoConfig(),
+    val blur: Float = 0f,
+    val dim: Float = 0.25f,
 )
+
+/** The shared look, as set on the Appearance screen. */
+fun Appearance.sharedLook() = PhotoLook(photo, blur, dim)
+
+fun Appearance.withLook(l: PhotoLook) = copy(photo = l.photo, blur = l.blur, dim = l.dim)
+
+/** Applies [path]'s own look, if it has one and the background is a photo. */
+fun Appearance.withLookFor(cfg: PhotoSourceConfig, path: String?): Appearance =
+    cfg.lookFor(path)?.takeIf { background == BackgroundType.IMAGE }?.let(::withLook) ?: this
 
 // ---------------------------------------------------------------- Feeds
 

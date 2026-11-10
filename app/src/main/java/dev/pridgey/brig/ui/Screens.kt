@@ -11,16 +11,12 @@ import dev.pridgey.brig.data.MediaConfig
 import dev.pridgey.brig.data.MediaStyle
 import dev.pridgey.brig.data.MediaVisibility
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.ColorMatrix
-import androidx.compose.ui.layout.ContentScale
 import dev.pridgey.brig.data.LayoutConfig
 import dev.pridgey.brig.data.PhotoConfig
-import dev.pridgey.brig.data.PhotoEffect
-import dev.pridgey.brig.lock.loadPhoto
-import dev.pridgey.brig.util.PhotoFx
+import dev.pridgey.brig.data.sharedLook
+import dev.pridgey.brig.data.withLook
+import androidx.compose.runtime.collectAsState
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.runtime.LaunchedEffect
@@ -288,8 +284,18 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
         if (a.background == BackgroundType.IMAGE) {
             item { PhotoSourceSettings(settings, update) }
         }
-        if (a.background == BackgroundType.IMAGE && a.imagePath != null) {
-            item { PhotoEditor(a, set = ::set, preview = ::preview) }
+        val rotating = settings.photos.source != dev.pridgey.brig.data.PhotoSource.SINGLE
+        if (a.background == BackgroundType.IMAGE && (a.imagePath != null || rotating)) {
+            item {
+                val rotated by dev.pridgey.brig.data.PhotoRotator.current.collectAsState()
+                val thumbPath = (if (rotating) rotated?.path else null) ?: a.imagePath
+                PhotoEditor(
+                    a, thumbPath = thumbPath,
+                    picks = settings.photos.source == dev.pridgey.brig.data.PhotoSource.ALBUM,
+                    currentHasOwn = settings.photos.lookFor(thumbPath) != null,
+                    set = ::set, preview = ::preview,
+                )
+            }
         }
         item { LiveEffectsSettings(a, ::set) }
         item {
@@ -320,56 +326,28 @@ fun AppearanceScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () 
 }
 
 @Composable
-private fun PhotoEditor(a: Appearance, set: ((Appearance) -> Appearance) -> Unit, preview: ((Appearance) -> Appearance) -> Unit) {
-    val p = a.photo
+private fun PhotoEditor(
+    a: Appearance,
+    thumbPath: String?,
+    picks: Boolean,
+    currentHasOwn: Boolean,
+    set: ((Appearance) -> Appearance) -> Unit,
+    preview: ((Appearance) -> Appearance) -> Unit,
+) {
     val accent = resolveAccent(a.accent)
-    fun setP(f: (PhotoConfig) -> PhotoConfig) = set { it.copy(photo = f(it.photo)) }
-    fun liveP(f: (PhotoConfig) -> PhotoConfig) = preview { it.copy(photo = f(it.photo)) }
-    val thumb by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, a.imagePath) {
-        value = withContext(Dispatchers.IO) { a.imagePath?.let { loadPhoto(it, 320) } }
-    }
-    fun pct(v: Float) = "${(v * 100).roundToInt()}%"
-    fun signed(v: Float) = (if (v > 0) "+" else "") + (v * 100).roundToInt()
-
-    SettingsGroup("Photo") {
-        Text("Effect", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 20.dp, top = 8.dp))
-        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(PhotoEffect.entries) { e ->
-                val selected = e == p.effect
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(
-                        Modifier
-                            .size(72.dp, 104.dp)
-                            .clip(RoundedCornerShape(18.dp))
-                            .then(if (selected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(18.dp)) else Modifier)
-                            .background(Color.DarkGray)
-                            .clickable { setP { it.copy(effect = e) } },
-                    ) {
-                        thumb?.let {
-                            Image(
-                                it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
-                                colorFilter = ColorFilter.colorMatrix(ColorMatrix(PhotoFx.effect(e, accent))),
-                            )
-                        }
-                    }
-                    Text(e.label, style = MaterialTheme.typography.labelMedium, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
-                }
-            }
+    SettingsGroup(if (picks) "Shared look" else "Photo") {
+        if (picks) {
+            Hint(
+                if (currentHasOwn) "Used by every picked photo that doesn't have its own look. The photo showing now has its own look, so the preview above won't change."
+                else "Used by every picked photo that doesn't have its own look.",
+            )
         }
-        SliderRow("Brightness", p.brightness, -0.5f..0.5f, label = ::signed, onLive = { v -> liveP { it.copy(brightness = v) } }) { v -> setP { it.copy(brightness = v) } }
-        SliderRow("Contrast", p.contrast, 0.5f..1.6f, label = ::pct, onLive = { v -> liveP { it.copy(contrast = v) } }) { v -> setP { it.copy(contrast = v) } }
-        SliderRow("Saturation", p.saturation, 0f..2f, label = ::pct, onLive = { v -> liveP { it.copy(saturation = v) } }) { v -> setP { it.copy(saturation = v) } }
-        SliderRow("Blur", a.blur, 0f..1f, label = ::pct, onLive = { v -> preview { it.copy(blur = v) } }) { v -> set { it.copy(blur = v) } }
-        SliderRow("Zoom", p.zoom, 1f..2.5f, label = { "%.1f×".format(it) }, onLive = { v -> liveP { it.copy(zoom = v) } }) { v -> setP { it.copy(zoom = v) } }
-        if (p.zoom > 1.01f) {
-            SliderRow("Move left / right", p.panX, -1f..1f, label = ::signed, onLive = { v -> liveP { it.copy(panX = v) } }) { v -> setP { it.copy(panX = v) } }
-            SliderRow("Move up / down", p.panY, -1f..1f, label = ::signed, onLive = { v -> liveP { it.copy(panY = v) } }) { v -> setP { it.copy(panY = v) } }
-        }
-        SliderRow("Vignette", p.vignette, 0f..1f, label = ::pct, onLive = { v -> liveP { it.copy(vignette = v) } }) { v -> setP { it.copy(vignette = v) } }
-        SliderRow("Film grain", p.grain, 0f..1f, label = ::pct, onLive = { v -> liveP { it.copy(grain = v) } }) { v -> setP { it.copy(grain = v) } }
-        SliderRow("Readability fade", p.scrim, 0f..1f, label = ::pct, onLive = { v -> liveP { it.copy(scrim = v) } }) { v -> setP { it.copy(scrim = v) } }
-        SwitchRow("Ken Burns", "Very slow zoom and drift", p.kenBurns) { v -> setP { it.copy(kenBurns = v) } }
-        ClickRow("Reset photo tweaks", icon = Icons.Filled.RestartAlt) { setP { PhotoConfig() }; set { it.copy(blur = 0f) } }
+        PhotoLookControls(
+            look = a.sharedLook(), thumbPath = thumbPath, accent = accent, showDim = false,
+            onLive = { f -> preview { it.withLook(f(it.sharedLook())) } },
+            onChange = { f -> set { it.withLook(f(it.sharedLook())) } },
+        )
+        ClickRow("Reset photo tweaks", icon = Icons.Filled.RestartAlt) { set { it.copy(photo = PhotoConfig(), blur = 0f) } }
     }
 }
 

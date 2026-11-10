@@ -121,7 +121,7 @@ object PhotoRotator {
         restore(ctx)
         if (cfg.source == PhotoSource.SINGLE) return@withLock
         val p = prefs(ctx)
-        val sourceKey = cfg.source.name + cfg.immichAlbumId + cfg.unsplashQuery + cfg.subreddit + cfg.albumPaths.size
+        val sourceKey = sourceKey(cfg)
         val sameSource = p.getString("source", null) == sourceKey && current.value != null
         val today = LocalDate.now().toString()
         val due = if (dailyOnly(cfg)) p.getString("day", null) != today
@@ -139,6 +139,21 @@ object PhotoRotator {
         }
         p.edit().putString("path", next.path).putString("caption", next.caption).putString("url", next.url)
             .putLong("at", System.currentTimeMillis()).putString("day", today).putString("source", sourceKey).apply()
+    }
+
+    private fun sourceKey(cfg: PhotoSourceConfig) =
+        cfg.source.name + cfg.immichAlbumId + cfg.unsplashQuery + cfg.subreddit + cfg.albumPaths.size
+
+    /** Puts one of the user's picks on the lock screen right away, restarting the rotation timer. */
+    suspend fun showNow(ctx: Context, cfg: PhotoSourceConfig, path: String) = lock.withLock {
+        if (!File(path).exists()) return@withLock
+        if (dev.pridgey.brig.BrigApp.settings.flow.value.appearance.depth) {
+            runCatching { dev.pridgey.brig.util.Segmenter.cutout(ctx, path) }
+        }
+        current.value = Current(path, null)
+        prefs(ctx).edit().putString("path", path).remove("caption").remove("url")
+            .putLong("at", System.currentTimeMillis()).putString("day", LocalDate.now().toString())
+            .putString("source", sourceKey(cfg)).apply()
     }
 
     private fun newFile(ctx: Context, ext: String = "jpg") = File(dir(ctx), "photo_${System.currentTimeMillis()}.$ext")
