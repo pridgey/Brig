@@ -244,12 +244,30 @@ class LockController(private val activity: ComponentActivity) {
 
     fun diag(event: DiagEvent) = DiagLog.record(activity, event)
 
+    /**
+     * Points [action] at one camera app. With several cameras installed and no default, Android
+     * would show its app chooser instead, and that chooser can't appear over the lock screen.
+     */
+    private fun cameraIntent(action: String): Intent {
+        val pm = activity.packageManager
+        val intent = Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val handlers = runCatching { pm.queryIntentActivities(Intent(action), 0) }.getOrDefault(emptyList())
+        if (handlers.size <= 1) return intent
+        val preferred = Camera.preferredPackage(
+            handlers.map { it.activityInfo.packageName },
+            default = pm.resolveActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA), android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName,
+            isSystem = { pkg -> handlers.first { it.activityInfo.packageName == pkg }.activityInfo.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM != 0 },
+        )
+        val pick = handlers.first { it.activityInfo.packageName == preferred }.activityInfo
+        return intent.setClassName(pick.packageName, pick.name)
+    }
+
     fun openCamera() {
         val plain = {
             diag(DiagEvent.CAMERA_PLAIN)
             requestUnlock {
                 try {
-                    activity.startActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    activity.startActivity(cameraIntent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA))
                 } catch (e: Exception) {
                     diag(DiagEvent.CAMERA_FAILED)
                     toast("No camera app found")
@@ -261,9 +279,7 @@ class LockController(private val activity: ComponentActivity) {
         if (!km.isKeyguardLocked) return plain()
         diag(DiagEvent.CAMERA_SECURE)
         try {
-            activity.startActivity(
-                Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA_SECURE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
+            activity.startActivity(cameraIntent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA_SECURE))
         } catch (e: Exception) {
             return plain()
         }
@@ -389,4 +405,13 @@ class LockController(private val activity: ComponentActivity) {
     fun launchGuestApp(pkg: String) = dismissKeyguard {
         activity.packageManager.getLaunchIntentForPackage(pkg)?.let { start(it) }
     }
+}
+
+/** Which camera app the lock screen opens. Pure, for tests. */
+object Camera {
+    /** The user's default camera if it's among [candidates], else a built-in one, else the first. */
+    fun preferredPackage(candidates: List<String>, default: String?, isSystem: (String) -> Boolean): String =
+        default?.takeIf { it in candidates }
+            ?: candidates.firstOrNull(isSystem)
+            ?: candidates.first()
 }

@@ -311,4 +311,14 @@ class FeaturesTest {
         val picked = Memories.pick(listOf(far, near, burst, exact), { it }, today, zone, 3)
         assertEquals(listOf(exact, near, far), picked)
     }
+
+    @Test
+    fun cameraPrefersDefaultThenBuiltIn() {
+        val apps = listOf("com.other.cam", "com.google.android.GoogleCamera")
+        val system = { p: String -> p == "com.google.android.GoogleCamera" }
+        assertEquals("com.other.cam", dev.pridgey.brig.lock.Camera.preferredPackage(apps, "com.other.cam", system))
+        // No default: Android's chooser ("android") isn't a camera, so use the built-in one.
+        assertEquals("com.google.android.GoogleCamera", dev.pridgey.brig.lock.Camera.preferredPackage(apps, "android", system))
+        assertEquals("com.other.cam", dev.pridgey.brig.lock.Camera.preferredPackage(apps, null) { false })
+    }
 }

@@ -30,6 +30,16 @@
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
 
+    <!-- Lets Brig find camera apps itself, so the lock screen never needs Android's app chooser. -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.STILL_IMAGE_CAMERA" />
+        </intent>
+        <intent>
+            <action android:name="android.media.action.STILL_IMAGE_CAMERA_SECURE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".BrigApp"
         android:allowBackup="true"
