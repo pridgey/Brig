@@ -75,6 +75,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -126,18 +127,30 @@ enum class Screen(val title: String, val subtitle: String, val icon: ImageVector
 }
 
 class MainActivity : ComponentActivity() {
+    /** A screen asked for by an intent, with a counter so asking for the same one twice still works. */
+    private var requested by mutableStateOf<Pair<Screen, Int>?>(null)
+
+    private fun screenFrom(intent: Intent?) = intent?.getStringExtra(EXTRA_SCREEN)?.let { runCatching { Screen.valueOf(it) }.getOrNull() }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val start = intent.getStringExtra(EXTRA_SCREEN)?.let { runCatching { Screen.valueOf(it) }.getOrNull() }
+        val start = screenFrom(intent)
         setContent {
             val settings by BrigApp.settings.flow.collectAsStateWithLifecycle()
             BrigTheme(accent = settings.appearance.accent) {
                 Surface(color = MaterialTheme.colorScheme.background) {
-                    OverlayHost { BrigSettingsApp(settings, start ?: Screen.HOME) }
+                    OverlayHost { BrigSettingsApp(settings, start ?: Screen.HOME, requested) }
                 }
             }
         }
+    }
+
+    // singleTask: if Brig is already open, a request for a screen arrives here instead of onCreate.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        screenFrom(intent)?.let { requested = it to ((requested?.second ?: 0) + 1) }
     }
 
     companion object {
@@ -146,8 +159,9 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun BrigSettingsApp(settings: BrigSettings, start: Screen) {
+private fun BrigSettingsApp(settings: BrigSettings, start: Screen, requested: Pair<Screen, Int>? = null) {
     var screen by rememberSaveable { mutableStateOf(start) }
+    LaunchedEffect(requested) { requested?.let { screen = it.first } }
     val scope = rememberCoroutineScope()
     val update: SettingsUpdate = { f -> scope.launch { BrigApp.settings.update(f) } }
     val back = {

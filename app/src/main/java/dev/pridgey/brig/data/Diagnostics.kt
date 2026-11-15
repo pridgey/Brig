@@ -14,6 +14,13 @@ enum class DiagEvent(val label: String) {
     FALLBACK("Fallback notification posted"),
     BOOT("Phone restarted"),
     UPDATED("Brig updated"),
+    SWIPE_LEFT("Swiped left"),
+    SWIPE_RIGHT("Swiped right"),
+    SWIPE_UP("Swiped up"),
+    SWIPE_DOWN("Swiped down"),
+    CAMERA_SECURE("Opening camera over the lock"),
+    CAMERA_PLAIN("Opening camera after unlock"),
+    CAMERA_FAILED("Camera didn't open"),
 }
 
 data class DiagEntry(val event: DiagEvent, val at: Long)

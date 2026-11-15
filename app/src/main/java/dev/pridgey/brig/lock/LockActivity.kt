@@ -37,6 +37,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import dev.pridgey.brig.BrigApp
 import dev.pridgey.brig.data.BrigSettings
+import dev.pridgey.brig.data.DiagEvent
+import dev.pridgey.brig.data.DiagLog
 import dev.pridgey.brig.data.GestureAction
 import dev.pridgey.brig.data.Stats
 import dev.pridgey.brig.data.UnlockMethod
@@ -240,15 +242,39 @@ class LockController(private val activity: ComponentActivity) {
         }
     }
 
+    fun diag(event: DiagEvent) = DiagLog.record(activity, event)
+
     fun openCamera() {
+        val plain = {
+            diag(DiagEvent.CAMERA_PLAIN)
+            requestUnlock {
+                try {
+                    activity.startActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (e: Exception) {
+                    diag(DiagEvent.CAMERA_FAILED)
+                    toast("No camera app found")
+                }
+            }
+        }
+        // The secure camera opens over the keyguard without unlocking, but only while it's locked;
+        // otherwise there's nothing to open over, so go straight to the normal camera.
+        if (!km.isKeyguardLocked) return plain()
+        diag(DiagEvent.CAMERA_SECURE)
         try {
-            // The secure camera opens over the keyguard without unlocking.
             activity.startActivity(
                 Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA_SECURE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
-        } catch (e: ActivityNotFoundException) {
-            requestUnlock { start(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)) }
+        } catch (e: Exception) {
+            return plain()
         }
+        // Some camera apps accept the secure request and then quietly do nothing. If Brig is still
+        // in front a moment later, the camera never came up: fall back to unlocking first.
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (!activity.isFinishing && activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                diag(DiagEvent.CAMERA_FAILED)
+                plain()
+            }
+        }, 1500)
     }
 
     fun sleep() {

@@ -277,6 +277,13 @@ private fun LockScreenContent(rawSettings: BrigSettings, controller: LockControl
     val latest by rememberUpdatedState(settings)
 
     fun fire(dir: GestureDir) {
+        when (dir) {
+            GestureDir.LEFT -> dev.pridgey.brig.data.DiagEvent.SWIPE_LEFT
+            GestureDir.RIGHT -> dev.pridgey.brig.data.DiagEvent.SWIPE_RIGHT
+            GestureDir.UP -> dev.pridgey.brig.data.DiagEvent.SWIPE_UP
+            GestureDir.DOWN -> dev.pridgey.brig.data.DiagEvent.SWIPE_DOWN
+            else -> null
+        }?.let { controller.diag(it) }
         val g = latest.gestures
         var action = g.action(dir)
         if (dir == GestureDir.UP && !g.hasUnlock()) action = GestureAction.UNLOCK

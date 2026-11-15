@@ -176,7 +176,7 @@ fun DiagnosticsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: ()
                 if (log.isEmpty()) Note("Nothing yet. Lock your phone once and come back.")
                 val missedAt = DiagLog.missed(log).map { it.at }.toSet()
                 log.takeLast(40).asReversed().forEach { e ->
-                    val bad = e.event in setOf(DiagEvent.A11Y_OFF, DiagEvent.LISTENER_OFF) || (e.event == DiagEvent.SCREEN_OFF && e.at in missedAt)
+                    val bad = e.event in setOf(DiagEvent.A11Y_OFF, DiagEvent.LISTENER_OFF, DiagEvent.CAMERA_FAILED) || (e.event == DiagEvent.SCREEN_OFF && e.at in missedAt)
                     ListItem(
                         headlineContent = {
                             Text(
