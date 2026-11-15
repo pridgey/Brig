@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Gesture
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LocalShipping
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
@@ -120,6 +121,8 @@ enum class Screen(val title: String, val subtitle: String, val icon: ImageVector
     PERMISSIONS("Permissions", "What Brig can access", Icons.Filled.Security),
     CLOCK_BUILDER("Clock builder", "", Icons.Filled.Palette),
     DIAGNOSTICS("Diagnostics", "", Icons.Filled.Security),
+    /** Opened by long-pressing the Packages widget; the same settings also live under Widgets. */
+    PACKAGES("Packages", "", Icons.Filled.LocalShipping),
 }
 
 class MainActivity : ComponentActivity() {
@@ -151,6 +154,7 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen) {
         screen = when (screen) {
             Screen.CLOCK_BUILDER -> Screen.APPEARANCE
             Screen.DIAGNOSTICS -> Screen.PERMISSIONS
+            Screen.PACKAGES -> Screen.WIDGETS
             else -> Screen.HOME
         }
     }
@@ -177,6 +181,7 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen) {
             Screen.CLOCK_BUILDER -> ClockBuilderScreen(settings, update, back)
             Screen.DIAGNOSTICS -> DiagnosticsScreen(settings, update, back)
             Screen.WIDGETS -> WidgetsScreen(settings, update, back)
+            Screen.PACKAGES -> ScreenScaffold("Packages", back) { item { PackagesSettings(settings.packages, update) } }
             Screen.NOTIFICATIONS -> NotificationsScreen(settings, update, back)
             Screen.UNLOCK -> UnlockScreen(settings, update, back)
             Screen.SHORTCUTS -> ShortcutsScreen(settings, update, back)
@@ -336,7 +341,7 @@ private fun HomeScreen(settings: BrigSettings, update: SettingsUpdate, navigate:
                 modifier = Modifier.padding(start = 20.dp),
             )
         }
-        val sections = Screen.entries.filter { it != Screen.HOME && it != Screen.PERMISSIONS && it != Screen.CLOCK_BUILDER && it != Screen.DIAGNOSTICS }
+        val sections = Screen.entries.filter { it != Screen.HOME && it != Screen.PERMISSIONS && it != Screen.CLOCK_BUILDER && it != Screen.DIAGNOSTICS && it != Screen.PACKAGES }
         sections.chunked(2).forEachIndexed { row, pair ->
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

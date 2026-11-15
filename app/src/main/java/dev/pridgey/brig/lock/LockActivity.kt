@@ -247,11 +247,7 @@ class LockController(private val activity: ComponentActivity) {
                 Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA_SECURE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
         } catch (e: ActivityNotFoundException) {
-            requestUnlock {
-                activity.startActivity(
-                    Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-            }
+            requestUnlock { start(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)) }
         }
     }
 
@@ -307,6 +303,14 @@ class LockController(private val activity: ComponentActivity) {
 
     fun openAlarm(show: PendingIntent?) = requestUnlock {
         if (show != null) send(show) else start(Intent(AlarmClock.ACTION_SHOW_ALARMS))
+    }
+
+    /** Long-press on the Packages widget: Brig's package list, where packages can be removed. */
+    fun openPackageSettings() = requestUnlock {
+        start(
+            Intent(activity, dev.pridgey.brig.ui.MainActivity::class.java)
+                .putExtra(dev.pridgey.brig.ui.MainActivity.EXTRA_SCREEN, dev.pridgey.brig.ui.Screen.PACKAGES.name),
+        )
     }
 
     fun openUri(uri: Uri, type: String? = null) = requestUnlock {

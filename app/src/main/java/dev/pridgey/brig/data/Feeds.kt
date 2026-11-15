@@ -253,7 +253,7 @@ object SportsRepo {
             ?: c.obj("score").str("displayValue") ?: ""
         val start = runCatching { Instant.parse((event.str("date") ?: "").let { if (it.length == 17) it.dropLast(1) + ":00Z" else it }).toEpochMilli() }.getOrDefault(0L)
         val detail = when (state) {
-            GameState.PRE -> Instant.ofEpochMilli(start).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("EEE h:mm a"))
+            GameState.PRE -> startText(start, ZoneId.systemDefault(), h24 = false)
             else -> type.str("shortDetail") ?: type.str("detail") ?: ""
         }
         return Game(
@@ -269,6 +269,13 @@ object SportsRepo {
             oppColor = color(them.obj("team").str("color")),
         )
     }
+
+    /**
+     * A scheduled game's start, in [zone]. Formatted when drawn rather than stored, since games are
+     * cached and the phone's time zone (or 12/24-hour setting) can change after they were fetched.
+     */
+    fun startText(start: Long, zone: ZoneId, h24: Boolean): String =
+        Instant.ofEpochMilli(start).atZone(zone).format(DateTimeFormatter.ofPattern(if (h24) "EEE HH:mm" else "EEE h:mm a"))
 
     private suspend fun gameFor(team: SportsTeam): Game? {
         // Today's scoreboard has live scores; fall back to the team's next or most recent event.

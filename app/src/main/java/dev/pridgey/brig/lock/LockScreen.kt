@@ -27,6 +27,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -297,6 +298,14 @@ private fun LockScreenContent(rawSettings: BrigSettings, controller: LockControl
             .fillMaxSize()
             .onPlaced { clockTracker.root = it }
             .background(Color.Black)
+            // With gesture navigation, a left/right swipe that starts near an edge is the system
+            // Back gesture and never reaches us. Android lets an app take back up to 200dp of each
+            // edge, so claim a band through the middle of the screen for the side swipes.
+            .systemGestureExclusion { c ->
+                val band = with(density) { gestureBand.toPx() }.coerceAtMost(c.size.height.toFloat())
+                val top = c.size.height * 0.5f - band / 2
+                androidx.compose.ui.geometry.Rect(0f, top, c.size.width.toFloat(), top + band)
+            }
             .pointerInput(Unit) {
                 var total = Offset.Zero
                 detectDragGestures(
@@ -379,6 +388,9 @@ private fun LockScreenContent(rawSettings: BrigSettings, controller: LockControl
         }
     }
 }
+
+/** The most of each screen edge Android lets an app exclude from the Back gesture. */
+private val gestureBand = 200.dp
 
 /** A short-lived note that this is a preview, and how to get back. */
 @Composable

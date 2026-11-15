@@ -14,6 +14,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -282,9 +283,11 @@ fun SportsView(games: List<Game>) {
     if (games.isEmpty()) return
     val pulse = rememberInfiniteTransition(label = "live")
     val a by pulse.animateFloat(0.4f, 1f, infiniteRepeatable(tween(900, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "a")
+    val h24 = android.text.format.DateFormat.is24HourFormat(LocalContext.current)
     GlassCard {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             games.forEach { g ->
+                val detail = if (g.state == GameState.PRE && g.start > 0) SportsRepo.startText(g.start, ZoneId.systemDefault(), h24) else g.detail
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TeamBadge(g.teamAbbr, g.teamColor)
                     Spacer(Modifier.width(8.dp))
@@ -296,7 +299,7 @@ fun SportsView(games: List<Game>) {
                     Spacer(Modifier.width(8.dp))
                     TeamBadge(g.oppAbbr, g.oppColor)
                     Spacer(Modifier.width(12.dp))
-                    Text(g.detail, style = MaterialTheme.typography.bodySmall, color = dim, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(detail, style = MaterialTheme.typography.bodySmall, color = dim, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (g.state == GameState.LIVE) {
                         Box(
                             Modifier.clip(CircleShape).background(Color(0xFFE53935).copy(alpha = a)).padding(horizontal = 8.dp, vertical = 2.dp),
@@ -317,14 +320,16 @@ internal fun LiveSports(cfg: SportsConfig, now: LocalDateTime) {
 
 // ---------------------------------------------------------------- Packages
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun PackagesView(list: List<TrackedPackage>, accent: Color, onOpen: (TrackedPackage) -> Unit) {
+fun PackagesView(list: List<TrackedPackage>, accent: Color, onManage: (() -> Unit)? = null, onOpen: (TrackedPackage) -> Unit) {
     if (list.isEmpty()) return
     GlassCard {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             list.take(4).forEach { p ->
                 Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onOpen(p) },
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                        .combinedClickable(onClick = { onOpen(p) }, onLongClick = onManage, onLongClickLabel = "Manage packages"),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(
@@ -352,7 +357,7 @@ internal fun LivePackages(cfg: PackagesConfig, accent: Color, controller: LockCo
     val ctx = LocalContext.current
     remember { PackageRepo.load(ctx) }
     val all by PackageRepo.packages.collectAsState()
-    PackagesView(PackageRepo.visible(all, cfg), accent) { p ->
+    PackagesView(PackageRepo.visible(all, cfg), accent, onManage = controller::openPackageSettings) { p ->
         PackageParse.trackingUrl(p)?.let { controller.openUri(Uri.parse(it)) }
     }
 }
