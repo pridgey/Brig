@@ -1011,6 +1011,7 @@ private fun sampleFlight(): dev.pridgey.brig.data.FlightView {
         pos = dev.pridgey.brig.data.PlanePos("a11fa3", "UAL1321", "N17128", "B739", 41.9, -95.6, 36000, false, 468.0, 84.0, 0, System.currentTimeMillis()),
         phase = dev.pridgey.brig.data.FlightPhase.AIRBORNE,
         aircraft = "Boeing 737-900",
+        tookOff = System.currentTimeMillis() - 2 * 3600_000L,
     )
 }
 

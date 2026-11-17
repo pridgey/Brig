@@ -172,6 +172,32 @@ class FlightsTest {
             """[{"icao24":"a37aa3","firstSeen":100,"estDepartureAirport":"KATL","estArrivalAirport":"KLAX","callsign":"DAL900  "},
                {"icao24":"a37aa3","firstSeen":200,"estDepartureAirport":"KLAX","estArrivalAirport":null,"callsign":"DAL2176 "}]""",
         ), "DAL2176")
-        assertEquals("KLAX" to null, leg)
+        assertEquals(FlightParse.OpenSkyLeg("KLAX", null, 200_000L, null), leg)
+        // First seen mid-air (no departure airport): that time isn't a takeoff.
+        val midAir = FlightParse.openSkyLeg(Json.parseToJsonElement(
+            """[{"firstSeen":300,"lastSeen":900,"estDepartureAirport":null,"estArrivalAirport":"KDEN","callsign":"DAL2176"}]""",
+        ), "DAL2176")
+        assertEquals(FlightParse.OpenSkyLeg(null, "KDEN", null, 900_000L), midAir)
+    }
+
+    @Test
+    fun timeLabels() {
+        val now = 1_800_000_000_000L
+        val mid = FlightMath.greatCircle(sfo.lat, sfo.lon, ewr.lat, ewr.lon, 2)[1]
+        val flying = dev.pridgey.brig.data.FlightView(
+            "UA1321", "", route, pos(mid.first, mid.second), FlightPhase.AIRBORNE,
+            departs = now - 3 * 3600_000L, arrives = now + 3600_000L, tookOff = now - 2 * 3600_000L,
+        )
+        val (dep, arr) = dev.pridgey.brig.lock.flightTimes(flying, h24 = true, now = now)
+        // The real takeoff wins over the schedule, and in the air the arrival is an estimate.
+        assertTrue(dep!!.startsWith("Dep "))
+        assertTrue(arr!!.startsWith("Est "))
+        val waiting = flying.copy(pos = null, phase = FlightPhase.SCHEDULED, tookOff = null)
+        val (d2, a2) = dev.pridgey.brig.lock.flightTimes(waiting, h24 = true, now = now)
+        assertTrue(d2!!.startsWith("Sched ") && a2!!.startsWith("Sched "))
+        val landed = flying.copy(phase = FlightPhase.LANDED, landedTime = now - 600_000L)
+        assertTrue(dev.pridgey.brig.lock.flightTimes(landed, h24 = true, now = now).second!!.startsWith("Arr "))
+        val manual = waiting.copy(departs = null, arrives = null)
+        assertEquals(null to null, dev.pridgey.brig.lock.flightTimes(manual, h24 = true, now = now))
     }
 }

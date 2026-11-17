@@ -207,7 +207,7 @@ internal fun flightFacts(v: FlightView, imperial: Boolean, h24: Boolean, now: Lo
             if (v.phase == FlightPhase.OVERHEAD) {
                 p?.distNm?.let { nm -> parts += FlightMath.distance(nm, imperial) + (p.dirDeg?.let { " " + FlightMath.compass(it) } ?: "") + " of you" }
             } else FlightMath.minutesLeft(v.route, p)?.let { m ->
-                parts += "≈${FlightMath.duration(m)} left · lands ${timeText(now + m * 60_000L, h24)}"
+                parts += "≈${FlightMath.duration(m)} left"
             }
         }
         FlightPhase.SCHEDULED -> parts += v.departs?.let { t ->
@@ -234,8 +234,25 @@ private fun PhasePill(phase: FlightPhase, accent: Color) {
     }
 }
 
+/**
+ * The time under each airport: actual takeoff/landing when tracked, an estimate while in the air,
+ * or the calendar's schedule. Pure, so it can be tested.
+ */
+internal fun flightTimes(v: FlightView, h24: Boolean, now: Long = System.currentTimeMillis()): Pair<String?, String?> {
+    val dep = v.tookOff?.let { "Dep ${timeText(it, h24)}" }
+        ?: v.departs?.let { "Sched ${timeText(it, h24)}" }
+    val eta = FlightMath.minutesLeft(v.route, v.pos)?.takeIf { v.phase == FlightPhase.AIRBORNE || v.phase == FlightPhase.OVERHEAD }
+    val arr = when {
+        v.phase == FlightPhase.LANDED && v.landedTime != null -> "Arr ${timeText(v.landedTime, h24)}"
+        eta != null -> "Est ${timeText(now + eta * 60_000L, h24)}"
+        v.arrives != null -> "Sched ${timeText(v.arrives, h24)}"
+        else -> null
+    }
+    return dep to arr
+}
+
 @Composable
-private fun RouteProgress(v: FlightView, accent: Color) {
+private fun RouteProgress(v: FlightView, accent: Color, h24: Boolean) {
     val o = v.route?.origin ?: return
     val d = v.route.dest
     val f = when (v.phase) {
@@ -243,11 +260,13 @@ private fun RouteProgress(v: FlightView, accent: Color) {
         FlightPhase.SCHEDULED, FlightPhase.TAXIING -> 0f
         else -> FlightMath.progress(v.route, v.pos) ?: if (d == null) 0.5f else 0f
     }
+    val (depTime, arrTime) = flightTimes(v, h24)
     val plane = rememberVectorPainter(Icons.Filled.Flight)
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Column {
+        Column(Modifier.width(96.dp)) {
             Text(o.iata, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text(o.city, style = MaterialTheme.typography.labelSmall, color = dim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(84.dp))
+            Text(o.city, style = MaterialTheme.typography.labelSmall, color = dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            depTime?.let { Text(it, style = MaterialTheme.typography.labelMedium, maxLines = 1) }
         }
         Canvas(Modifier.weight(1f).height(24.dp).padding(horizontal = 8.dp)) {
             val y = size.height / 2
@@ -261,9 +280,10 @@ private fun RouteProgress(v: FlightView, accent: Color) {
                 }
             }
         }
-        Column(horizontalAlignment = Alignment.End) {
+        Column(Modifier.width(96.dp), horizontalAlignment = Alignment.End) {
             Text(d?.iata ?: "?", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text(d?.city ?: "Destination unknown", style = MaterialTheme.typography.labelSmall, color = dim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(84.dp), textAlign = TextAlign.End)
+            Text(d?.city ?: "Destination unknown", style = MaterialTheme.typography.labelSmall, color = dim, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End)
+            arrTime?.let { Text(it, style = MaterialTheme.typography.labelMedium, maxLines = 1, textAlign = TextAlign.End) }
         }
     }
 }
@@ -301,7 +321,7 @@ fun FlightsView(
                 PhasePill(v.phase, accent)
             }
             if (cfg.showMap && shot != null) FlightMap(v, shot, cfg.mapStyle, accent)
-            if (v.home == null) RouteProgress(v, accent)
+            if (v.home == null) RouteProgress(v, accent, h24)
             else v.route?.let { r ->
                 if (r.origin != null && r.dest != null) {
                     Text("${r.origin.city.ifBlank { r.origin.iata }} → ${r.dest.city.ifBlank { r.dest.iata }}", style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
