@@ -51,6 +51,12 @@ import androidx.compose.ui.unit.dp
 import dev.pridgey.brig.data.Appearance
 import dev.pridgey.brig.data.BackgroundType
 import dev.pridgey.brig.data.BrigSettings
+import dev.pridgey.brig.data.FlightMapStyle
+import dev.pridgey.brig.data.FlightMapView
+import dev.pridgey.brig.data.FlightParse
+import dev.pridgey.brig.data.FlightRepo
+import dev.pridgey.brig.data.FlightTracker
+import dev.pridgey.brig.data.FlightsConfig
 import dev.pridgey.brig.data.HealthConfig
 import dev.pridgey.brig.data.HealthRepo
 import dev.pridgey.brig.data.HealthStyle
@@ -385,6 +391,68 @@ fun PackagesSettings(cfg: PackagesConfig, update: SettingsUpdate) {
             }, enabled = number.isNotBlank()) { Text("Add") }
         }
         Note("Tapping a package opens the carrier's tracking page. Status for numbers you add yourself only changes when a notification mentions them.")
+    }
+}
+
+// ---------------------------------------------------------------- Flights
+
+@Composable
+fun FlightsSettings(settings: BrigSettings, update: SettingsUpdate) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val cfg = settings.flights
+    remember { FlightRepo.load(ctx) }
+    val list by FlightRepo.flights.collectAsState()
+    var number by remember { mutableStateOf("") }
+    var label by remember { mutableStateOf("") }
+    fun set(f: (FlightsConfig) -> FlightsConfig) = update { it.copy(flights = f(it.flights)) }
+    SettingsGroup("Flight tracker") {
+        FlightRepo.visible(list).sortedByDescending { it.addedAt }.forEach { f ->
+            ListItem(
+                headlineContent = { Text(FlightParse.pretty(f.code)) },
+                supportingContent = f.label.takeIf { it.isNotBlank() }?.let { { Text(it) } },
+                trailingContent = { IconButton(onClick = { FlightRepo.remove(ctx, f.code) }) { Icon(Icons.Filled.Close, "Remove") } },
+                colors = rowColors,
+            )
+        }
+        Text("Follow a flight", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 20.dp, top = 8.dp))
+        Field("Flight number, like UA 1321", number) { number = it }
+        Field("Name (optional), like Mom's flight", label) { label = it }
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = {
+                val code = FlightRepo.add(ctx, number, label)
+                if (code == null) {
+                    toast(ctx, "That doesn't look like a flight number")
+                } else {
+                    number = ""
+                    label = ""
+                    scope.launch {
+                        val r = FlightRepo.route(code)
+                        val where = r?.let { listOfNotNull(it.origin?.iata, it.dest?.iata).joinToString(" → ") }.orEmpty()
+                        toast(ctx, if (where.isNotBlank()) "Following ${FlightParse.pretty(code)} · $where" else "Following ${FlightParse.pretty(code)}. Its route isn't known yet.")
+                    }
+                }
+            }, enabled = number.isNotBlank()) { Text("Follow") }
+        }
+        SwitchRow("Flights from your calendar", "Follows flights in events like \"Flight to Denver (UA 1321)\", from 3 hours before departure", cfg.fromCalendar) { v ->
+            set { it.copy(fromCalendar = v) }
+        }
+        SwitchRow("Planes overhead", "With no flight to follow, show the plane closest to your weather location", cfg.overhead) { v ->
+            set { it.copy(overhead = v) }
+        }
+        if (cfg.overhead) {
+            if (settings.weather.lat == null) Note("Set a weather location below so Brig knows where to look.")
+            SliderRow("Look within", cfg.overheadRadius.toFloat(), 5f..50f, label = { "${it.roundToInt()} nmi" }) { v ->
+                set { it.copy(overheadRadius = v.roundToInt()) }
+            }
+        }
+        SwitchRow("Show a map", checked = cfg.showMap) { v -> set { it.copy(showMap = v) } }
+        if (cfg.showMap) {
+            ChipChoice(FlightMapStyle.entries, cfg.mapStyle, { it.label }) { st -> set { it.copy(mapStyle = st) } }
+            ChipChoice(FlightMapView.entries, cfg.mapView, { it.label }) { mv -> set { it.copy(mapView = mv) } }
+        }
+        DropdownRow("Tapping opens", FlightTracker.entries, cfg.tracker, { it.label }) { t -> set { it.copy(tracker = t) } }
+        Note("Positions come from adsb.lol and routes from adsbdb, both free community networks of ADS-B receivers. The widget refreshes every 2 minutes. Coverage is thin over oceans, and private or military flights may be hidden. Maps © OpenStreetMap contributors © CARTO.")
     }
 }
 

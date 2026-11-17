@@ -20,6 +20,7 @@ data class BrigSettings(
     val health: HealthConfig = HealthConfig(),
     val sports: SportsConfig = SportsConfig(),
     val packages: PackagesConfig = PackagesConfig(),
+    val flights: FlightsConfig = FlightsConfig(),
     val photos: PhotoSourceConfig = PhotoSourceConfig(),
     val guest: GuestConfig = GuestConfig(),
     val sleep: SleepConfig = SleepConfig(),
@@ -424,6 +425,7 @@ enum class WidgetType(
     MEMORIES("On this day", false, defaultPriority = WidgetPriority.LOW),
     MOOD("Mood check-in", false),
     FLASHCARD("Word of the day", false, defaultPriority = WidgetPriority.LOW),
+    FLIGHTS("Flight tracker", false),
 }
 
 @Serializable

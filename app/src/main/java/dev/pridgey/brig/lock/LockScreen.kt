@@ -200,6 +200,7 @@ fun LockScreen(settings: BrigSettings, controller: LockController, previewPhoto:
 private val personalWidgets = setOf(
     WidgetType.NOTIFICATIONS, WidgetType.MEDIA, WidgetType.CALENDAR, WidgetType.STATS, WidgetType.HEALTH,
     WidgetType.PACKAGES, WidgetType.MEMORIES, WidgetType.LIVE, WidgetType.ALARM_CARD, WidgetType.TOGGLES, WidgetType.MOOD,
+    WidgetType.FLIGHTS,
 )
 
 /** What the lock screen shows in guest mode: no personal widgets, and only the guest apps. */
@@ -653,6 +654,7 @@ private fun MainContent(
                 WidgetType.SPORTS -> LiveSports(settings.sports, now)
                 WidgetType.PACKAGES -> LivePackages(settings.packages, accent, controller)
                 WidgetType.MEMORIES -> LiveMemories(controller)
+                WidgetType.FLIGHTS -> LiveFlights(settings, accent, now, controller)
                 else -> Unit
             }
         },
@@ -1000,6 +1002,18 @@ private fun sampleGames(now: Long) = listOf(
     dev.pridgey.brig.data.Game("BOS", "NYY", false, "", "", dev.pridgey.brig.data.GameState.PRE, "Tue 7:10 PM", now, 0xFFBD3039, 0xFF0C2340),
 )
 
+private fun sampleFlight(): dev.pridgey.brig.data.FlightView {
+    val sfo = dev.pridgey.brig.data.Airport("SFO", "San Francisco International Airport", "San Francisco", 37.619, -122.375)
+    val ewr = dev.pridgey.brig.data.Airport("EWR", "Newark Liberty International Airport", "Newark", 40.692, -74.169)
+    return dev.pridgey.brig.data.FlightView(
+        code = "UA1321", label = "",
+        route = dev.pridgey.brig.data.FlightRoute("UAL1321", "UA1321", "United Airlines", sfo, ewr),
+        pos = dev.pridgey.brig.data.PlanePos("a11fa3", "UAL1321", "N17128", "B739", 41.9, -95.6, 36000, false, 468.0, 84.0, 0, System.currentTimeMillis()),
+        phase = dev.pridgey.brig.data.FlightPhase.AIRBORNE,
+        aircraft = "Boeing 737-900",
+    )
+}
+
 @Composable
 private fun LockMockContent(settings: BrigSettings) {
     val ctx = LocalContext.current
@@ -1077,6 +1091,9 @@ private fun LockMockContent(settings: BrigSettings) {
                         listOf(dev.pridgey.brig.data.TrackedPackage("1Z999", "UPS", "Running shoes", "Out for delivery", nowMs - 40 * 60_000L)),
                         accent,
                     ) {}
+                    WidgetType.FLIGHTS -> sampleFlight().let { f ->
+                        FlightsView(listOf(f), if (settings.flights.showMap) remember(settings.flights.mapView) { mapFrame(f, settings.flights.mapView)?.let { (p, a, b) -> dev.pridgey.brig.util.MapShot.blank(p, minZ = a, maxZ = b) } } else null, settings.flights, accent, settings.weather.fahrenheit) {}
+                    }
                     WidgetType.MEMORIES -> GlassCard {
                         Text("On this day · 3 years ago", style = MaterialTheme.typography.titleSmall)
                         Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

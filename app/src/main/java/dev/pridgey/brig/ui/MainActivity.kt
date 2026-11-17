@@ -45,6 +45,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Flight
 import androidx.compose.material.icons.filled.BatterySaver
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CheckCircle
@@ -124,6 +125,8 @@ enum class Screen(val title: String, val subtitle: String, val icon: ImageVector
     DIAGNOSTICS("Diagnostics", "", Icons.Filled.Security),
     /** Opened by long-pressing the Packages widget; the same settings also live under Widgets. */
     PACKAGES("Packages", "", Icons.Filled.LocalShipping),
+    /** Opened by long-pressing the Flight tracker widget. */
+    FLIGHTS("Flights", "", Icons.Filled.Flight),
 }
 
 class MainActivity : ComponentActivity() {
@@ -168,7 +171,7 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen, requested: Pa
         screen = when (screen) {
             Screen.CLOCK_BUILDER -> Screen.APPEARANCE
             Screen.DIAGNOSTICS -> Screen.PERMISSIONS
-            Screen.PACKAGES -> Screen.WIDGETS
+            Screen.PACKAGES, Screen.FLIGHTS -> Screen.WIDGETS
             else -> Screen.HOME
         }
     }
@@ -196,6 +199,7 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen, requested: Pa
             Screen.DIAGNOSTICS -> DiagnosticsScreen(settings, update, back)
             Screen.WIDGETS -> WidgetsScreen(settings, update, back)
             Screen.PACKAGES -> ScreenScaffold("Packages", back) { item { PackagesSettings(settings.packages, update) } }
+            Screen.FLIGHTS -> ScreenScaffold("Flights", back) { item { FlightsSettings(settings, update) } }
             Screen.NOTIFICATIONS -> NotificationsScreen(settings, update, back)
             Screen.UNLOCK -> UnlockScreen(settings, update, back)
             Screen.SHORTCUTS -> ShortcutsScreen(settings, update, back)
@@ -355,7 +359,7 @@ private fun HomeScreen(settings: BrigSettings, update: SettingsUpdate, navigate:
                 modifier = Modifier.padding(start = 20.dp),
             )
         }
-        val sections = Screen.entries.filter { it != Screen.HOME && it != Screen.PERMISSIONS && it != Screen.CLOCK_BUILDER && it != Screen.DIAGNOSTICS && it != Screen.PACKAGES }
+        val sections = Screen.entries.filter { it != Screen.HOME && it != Screen.PERMISSIONS && it != Screen.CLOCK_BUILDER && it != Screen.DIAGNOSTICS && it != Screen.PACKAGES && it != Screen.FLIGHTS }
         sections.chunked(2).forEachIndexed { row, pair ->
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

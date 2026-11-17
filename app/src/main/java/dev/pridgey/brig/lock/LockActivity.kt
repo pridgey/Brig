@@ -355,6 +355,14 @@ class LockController(private val activity: ComponentActivity) {
         )
     }
 
+    /** Long-press on the Flight tracker widget: the flight list. */
+    fun openFlightSettings() = requestUnlock {
+        start(
+            Intent(activity, dev.pridgey.brig.ui.MainActivity::class.java)
+                .putExtra(dev.pridgey.brig.ui.MainActivity.EXTRA_SCREEN, dev.pridgey.brig.ui.Screen.FLIGHTS.name),
+        )
+    }
+
     fun openUri(uri: Uri, type: String? = null) = requestUnlock {
         val i = Intent(Intent.ACTION_VIEW).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         if (type != null) i.setDataAndType(uri, type) else i.data = uri

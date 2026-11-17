@@ -503,6 +503,7 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
         }
         val needsWeather = listOf(WidgetType.WEATHER, WidgetType.HOURLY, WidgetType.AIR, WidgetType.UV, WidgetType.POLLEN).any(settings::isWidgetOn) ||
             settings.appearance.weatherFx ||
+            (settings.isWidgetOn(WidgetType.FLIGHTS) && settings.flights.overhead) ||
             settings.profiles.any { it.enabled && (it.trigger == TriggerType.DAYTIME || it.trigger == TriggerType.NIGHTTIME) }
         if (needsWeather) {
             item { WeatherSettings(settings.weather) { cfg -> update { it.copy(weather = cfg) } } }
@@ -514,6 +515,7 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
         if (settings.isWidgetOn(WidgetType.SPORTS)) item { SportsSettings(settings.sports.teams, update) }
         if (settings.isWidgetOn(WidgetType.PACKAGES)) item { PackagesSettings(settings.packages, update) }
         if (settings.isWidgetOn(WidgetType.MEMORIES)) item { MemoriesSettings() }
+        if (settings.isWidgetOn(WidgetType.FLIGHTS)) item { FlightsSettings(settings, update) }
     }
 }
 
