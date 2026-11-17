@@ -167,8 +167,11 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen, requested: Pa
     LaunchedEffect(requested) { requested?.let { screen = it.first } }
     val scope = rememberCoroutineScope()
     val update: SettingsUpdate = { f -> scope.launch { BrigApp.settings.update(f) } }
+    // Set when a widget's gear opened another section, so Back returns to Widgets.
+    var fromWidgets by rememberSaveable { mutableStateOf(false) }
     val back = {
         screen = when (screen) {
+            Screen.NOTIFICATIONS, Screen.SHORTCUTS -> if (fromWidgets) Screen.WIDGETS else Screen.HOME
             Screen.CLOCK_BUILDER -> Screen.APPEARANCE
             Screen.DIAGNOSTICS -> Screen.PERMISSIONS
             Screen.PACKAGES, Screen.FLIGHTS -> Screen.WIDGETS
@@ -193,11 +196,11 @@ private fun BrigSettingsApp(settings: BrigSettings, start: Screen, requested: Pa
         label = "nav",
     ) { s ->
         when (s) {
-            Screen.HOME -> HomeScreen(settings, update) { screen = it }
+            Screen.HOME -> HomeScreen(settings, update) { fromWidgets = false; screen = it }
             Screen.APPEARANCE -> AppearanceScreen(settings, update, back) { screen = Screen.CLOCK_BUILDER }
             Screen.CLOCK_BUILDER -> ClockBuilderScreen(settings, update, back)
             Screen.DIAGNOSTICS -> DiagnosticsScreen(settings, update, back)
-            Screen.WIDGETS -> WidgetsScreen(settings, update, back)
+            Screen.WIDGETS -> WidgetsScreen(settings, update, back) { fromWidgets = true; screen = it }
             Screen.PACKAGES -> ScreenScaffold("Packages", back) { item { PackagesSettings(settings.packages, update) } }
             Screen.FLIGHTS -> ScreenScaffold("Flights", back) { item { FlightsSettings(settings, update) } }
             Screen.NOTIFICATIONS -> NotificationsScreen(settings, update, back)

@@ -33,6 +33,8 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -380,13 +382,37 @@ private fun PriorityPicker(value: dev.pridgey.brig.data.WidgetPriority, onPick: 
     }
 }
 
+/** Widgets with a settings screen elsewhere in the app; their gear opens it. */
+private val widgetScreens = mapOf(
+    WidgetType.NOTIFICATIONS to Screen.NOTIFICATIONS,
+    WidgetType.SHORTCUTS to Screen.SHORTCUTS,
+)
+
+private val weatherWidgets = setOf(WidgetType.WEATHER, WidgetType.HOURLY, WidgetType.AIR, WidgetType.UV, WidgetType.POLLEN)
+
+/** Whether [type] has its own settings page (opened with the gear on its row). */
+private fun hasWidgetPage(type: WidgetType) = type in weatherWidgets || type in setOf(
+    WidgetType.MEDIA, WidgetType.CALENDAR, WidgetType.DATE, WidgetType.MOOD, WidgetType.FLASHCARD,
+    WidgetType.HEALTH, WidgetType.SPORTS, WidgetType.PACKAGES, WidgetType.MEMORIES, WidgetType.FLIGHTS,
+)
+
 @Composable
-fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> Unit) {
+fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> Unit, onOpen: (Screen) -> Unit = {}) {
     val order = settings.widgetOrder()
     val ctx = LocalContext.current
     fun setWidgets(list: List<dev.pridgey.brig.data.WidgetConfig>) = update { it.copy(widgets = list) }
     var live by remember { mutableStateOf<BrigSettings?>(null) }
     LaunchedEffect(settings) { live = null }
+    // The widget whose settings page is open, if any.
+    var editing by rememberSaveable { mutableStateOf<WidgetType?>(null) }
+    editing?.let { type ->
+        androidx.activity.compose.BackHandler { editing = null }
+        WidgetPage(type, settings, live, { live = it }, update) { editing = null }
+        return
+    }
+    fun openSettings(type: WidgetType) {
+        widgetScreens[type]?.let(onOpen) ?: run { if (hasWidgetPage(type)) editing = type }
+    }
 
     ScreenScaffold(
         "Widgets", onBack,
@@ -401,6 +427,7 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                     if (idx.isEmpty()) Hint("Nothing here yet. Use the Top/Bottom button on any widget to move it.")
                     idx.forEachIndexed { pos, i ->
                         val w = order[i]
+                        val gear = w.enabled && (hasWidgetPage(w.type) || w.type in widgetScreens)
                         ListItem(
                             headlineContent = { Text(w.type.label, style = MaterialTheme.typography.titleMedium) },
                             supportingContent = {
@@ -429,6 +456,11 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                             },
                             trailingContent = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (gear) {
+                                        IconButton(onClick = { openSettings(w.type) }) {
+                                            Icon(Icons.Filled.Settings, "${w.type.label} settings")
+                                        }
+                                    }
                                     val other = if (zone == WidgetZone.TOP) WidgetZone.BOTTOM else WidgetZone.TOP
                                     AssistChip(
                                         onClick = { setWidgets(order.map { if (it.type == w.type) it.copy(zone = other) else it }) },
@@ -444,9 +476,12 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                                     Spacer(Modifier.width(8.dp))
                                     Switch(checked = w.enabled, onCheckedChange = { on ->
                                         setWidgets(order.map { if (it.type == w.type) it.copy(enabled = on) else it })
+                                        // Turning on a widget that needs setting up goes straight to its settings.
+                                        if (on && hasWidgetPage(w.type)) editing = w.type
                                     })
                                 }
                             },
+                            modifier = if (gear) Modifier.clickable { openSettings(w.type) } else Modifier,
                             colors = itemColors,
                         )
                     }
@@ -454,7 +489,7 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
             }
         }
         item {
-            Hint("When the screen fills up, widgets get space by priority, then by their place in the list. Anything that doesn't fit is hidden until there's room, like when music stops playing.")
+            Hint("Tap ⚙ for a widget's own settings. When the screen fills up, widgets get space by priority, then by their place in the list. Anything that doesn't fit is hidden until there's room, like when music stops playing.")
         }
         item {
             val op = settings.appearance.chipOpacity
@@ -466,8 +501,33 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                 Hint("Applies to the glance chips (alarm, battery, weather, stats, air quality, UV, pollen) and the calendar's Chips design.")
             }
         }
-        if (settings.isWidgetOn(WidgetType.MEDIA)) {
-            item {
+        // Weather location is shared, and also used by weather effects and sunrise/sunset profiles.
+        val weatherElsewhere = settings.appearance.weatherFx ||
+            settings.profiles.any { it.enabled && (it.trigger == TriggerType.DAYTIME || it.trigger == TriggerType.NIGHTTIME) }
+        if (weatherElsewhere && weatherWidgets.none(settings::isWidgetOn)) {
+            item { WeatherSettings(settings.weather) { cfg -> update { it.copy(weather = cfg) } } }
+        }
+    }
+}
+
+/** One widget's settings, with the live preview pinned on top. */
+@Composable
+private fun WidgetPage(
+    type: WidgetType,
+    settings: BrigSettings,
+    live: BrigSettings?,
+    setLive: (BrigSettings?) -> Unit,
+    update: SettingsUpdate,
+    onBack: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    ScreenScaffold(
+        type.label, onBack,
+        pinned = { LockPreview(live ?: settings, Modifier.fillMaxSize()) { LockActivity.show(ctx) } },
+    ) {
+        if (!settings.isWidgetOn(type)) item { Hint("This widget is off. Turn it on in the Widgets list to see it on the lock screen.") }
+        when (type) {
+            WidgetType.MEDIA -> item {
                 val m = settings.media
                 fun setM(f: (MediaConfig) -> MediaConfig) = update { it.copy(media = f(it.media)) }
                 SettingsGroup("Media controls") {
@@ -480,9 +540,7 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                     }
                 }
             }
-        }
-        if (settings.isWidgetOn(WidgetType.CALENDAR)) {
-            item {
+            WidgetType.CALENDAR -> item {
                 val c = settings.calendar
                 fun setC(f: (CalendarConfig) -> CalendarConfig) = update { it.copy(calendar = f(it.calendar)) }
                 SettingsGroup("Calendar") {
@@ -490,7 +548,7 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                     ChipChoice(CalendarStyle.entries, c.style, { it.label }) { st -> setC { it.copy(style = st) } }
                     SliderRow(
                         "Events shown", c.count.toFloat(), 1f..5f, steps = 3, label = { it.roundToInt().toString() },
-                        onLive = { v -> live = settings.copy(calendar = c.copy(count = v.roundToInt())) },
+                        onLive = { v -> setLive(settings.copy(calendar = c.copy(count = v.roundToInt()))) },
                     ) { v -> setC { it.copy(count = v.roundToInt()) } }
                     DropdownRow("Look ahead", listOf(12, 24, 36, 72, 168), c.lookaheadHours, { h -> if (h < 48) "$h hours" else "${h / 24} days" }) { h ->
                         setC { it.copy(lookaheadHours = h) }
@@ -500,22 +558,21 @@ fun WidgetsScreen(settings: BrigSettings, update: SettingsUpdate, onBack: () -> 
                     if (!CalendarRepo.hasPermission(ctx)) Hint("Grant calendar access in Permissions to see your events. The preview uses sample events.")
                 }
             }
+            in weatherWidgets -> item { WeatherSettings(settings.weather) { cfg -> update { it.copy(weather = cfg) } } }
+            WidgetType.DATE -> item { DateSettings(settings.appearance, update) }
+            WidgetType.MOOD -> item { MoodSettings() }
+            WidgetType.FLASHCARD -> item { FlashcardSettings(settings.flashcards, update) }
+            WidgetType.HEALTH -> item { HealthSettings(settings.health, update) }
+            WidgetType.SPORTS -> item { SportsSettings(settings.sports.teams, update) }
+            WidgetType.PACKAGES -> item { PackagesSettings(settings.packages, update) }
+            WidgetType.MEMORIES -> item { MemoriesSettings() }
+            WidgetType.FLIGHTS -> {
+                item { FlightsSettings(settings, update) }
+                // "Planes overhead" looks around the weather location.
+                if (settings.flights.overhead) item { WeatherSettings(settings.weather) { cfg -> update { it.copy(weather = cfg) } } }
+            }
+            else -> Unit
         }
-        val needsWeather = listOf(WidgetType.WEATHER, WidgetType.HOURLY, WidgetType.AIR, WidgetType.UV, WidgetType.POLLEN).any(settings::isWidgetOn) ||
-            settings.appearance.weatherFx ||
-            (settings.isWidgetOn(WidgetType.FLIGHTS) && settings.flights.overhead) ||
-            settings.profiles.any { it.enabled && (it.trigger == TriggerType.DAYTIME || it.trigger == TriggerType.NIGHTTIME) }
-        if (needsWeather) {
-            item { WeatherSettings(settings.weather) { cfg -> update { it.copy(weather = cfg) } } }
-        }
-        if (settings.isWidgetOn(WidgetType.DATE)) item { DateSettings(settings.appearance, update) }
-        if (settings.isWidgetOn(WidgetType.MOOD)) item { MoodSettings() }
-        if (settings.isWidgetOn(WidgetType.FLASHCARD)) item { FlashcardSettings(settings.flashcards, update) }
-        if (settings.isWidgetOn(WidgetType.HEALTH)) item { HealthSettings(settings.health, update) }
-        if (settings.isWidgetOn(WidgetType.SPORTS)) item { SportsSettings(settings.sports.teams, update) }
-        if (settings.isWidgetOn(WidgetType.PACKAGES)) item { PackagesSettings(settings.packages, update) }
-        if (settings.isWidgetOn(WidgetType.MEMORIES)) item { MemoriesSettings() }
-        if (settings.isWidgetOn(WidgetType.FLIGHTS)) item { FlightsSettings(settings, update) }
     }
 }
 
