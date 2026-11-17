@@ -102,10 +102,11 @@ enum class FlightTracker(val label: String) {
     ADSB_LOL("adsb.lol live map"),
 }
 
-enum class FlightMapStyle(val label: String, val path: String, val background: Long) {
-    DARK("Dark", "dark_all", 0xFF0E0E0E),
-    LIGHT("Light", "light_all", 0xFFF2F2F0),
-    COLOR("Color", "rastertiles/voyager", 0xFFE8E4DA),
+/** OpenStreetMap tiles, recolored on the phone (OSM only publishes the one colorful style). */
+enum class FlightMapStyle(val label: String, val background: Long) {
+    DARK("Dark", 0xFF1B1E22),
+    LIGHT("Light", 0xFFF2F2F0),
+    COLOR("Color", 0xFFF2EFE9),
 }
 
 enum class FlightMapView(val label: String) {

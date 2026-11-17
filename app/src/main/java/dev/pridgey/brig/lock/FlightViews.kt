@@ -96,7 +96,7 @@ internal fun mapFrame(v: FlightView, view: FlightMapView): Triple<List<Pair<Doub
 
 internal suspend fun flightMap(ctx: Context, v: FlightView, cfg: FlightsConfig): MapShot? {
     val (pts, minZ, maxZ) = mapFrame(v, cfg.mapView) ?: return null
-    return TileMap.render(ctx, cfg.mapStyle.path, cfg.mapStyle.background.toInt(), pts, minZ, maxZ)
+    return TileMap.render(ctx, TileMap.filterFor(cfg.mapStyle), cfg.mapStyle.background.toInt(), pts, minZ, maxZ)
 }
 
 @Composable
@@ -168,7 +168,7 @@ private fun FlightMap(v: FlightView, shot: MapShot, style: FlightMapStyle, accen
         }
         if (shot.bitmap != null) {
             Text(
-                "© OpenStreetMap © CARTO", fontSize = 8.sp, color = ink.copy(alpha = 0.55f),
+                "© OpenStreetMap contributors", fontSize = 8.sp, color = ink.copy(alpha = 0.55f),
                 modifier = Modifier.align(Alignment.BottomEnd).padding(horizontal = 8.dp, vertical = 3.dp),
             )
         }

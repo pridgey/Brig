@@ -452,7 +452,7 @@ fun FlightsSettings(settings: BrigSettings, update: SettingsUpdate) {
         }
         DropdownRow("Tapping opens", FlightTracker.entries, cfg.tracker, { it.label }) { t -> set { it.copy(tracker = t) } }
         Note("Airlines reuse flight numbers for different legs, so Brig takes the departure airport from where the plane actually took off (OpenSky). The destination is only shown when it's certain; add the route yourself to always see it.")
-        Note("Positions come from adsb.lol and routes from adsbdb, both free community networks of ADS-B receivers. The widget refreshes every 2 minutes. Coverage is thin over oceans, and private or military flights may be hidden. Maps © OpenStreetMap contributors © CARTO.")
+        Note("Positions come from adsb.lol and routes from adsbdb, both free community networks of ADS-B receivers. The widget refreshes every 2 minutes. Coverage is thin over oceans, and private or military flights may be hidden. Maps © OpenStreetMap contributors.")
     }
 }
 
