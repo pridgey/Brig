@@ -31,6 +31,9 @@ data class TrackedFlight(
     val addedAt: Long = 0,
     /** When Brig first saw it landed; it's dropped a few hours later. */
     val landedAt: Long = 0,
+    /** Airport codes the user typed (IATA or ICAO). They override any looked-up route. */
+    val from: String = "",
+    val to: String = "",
 )
 
 @Serializable
@@ -212,6 +215,34 @@ object FlightParse {
         )
     }
 
+    /** "LAX DEN", "lax-den", "KLAX → KDEN" → ("LAX", "DEN"). Null unless it's two airport codes. */
+    fun routeCodes(raw: String): Pair<String, String>? {
+        val parts = raw.uppercase().split(Regex("""[^A-Z0-9]+""")).filter { it.isNotEmpty() }
+        if (parts.size != 2 || parts.any { it.length !in 3..4 || it.none(Char::isLetter) }) return null
+        return parts[0] to parts[1]
+    }
+
+    /** An airport from hexdb's /api/v1/airport response. */
+    fun hexdbAirport(o: JsonElement): Airport? {
+        val lat = o.num("latitude") ?: return null
+        val lon = o.num("longitude") ?: return null
+        val name = o.str("airport").orEmpty()
+        return Airport(
+            iata = o.str("iata")?.takeIf { it.isNotBlank() } ?: o.str("icao").orEmpty(),
+            name = name,
+            city = name.replace(Regex("""(?i)\s*(international|intl\.?|regional|municipal)?\s*airport\s*$"""), "").trim(),
+            lat = lat, lon = lon,
+        )
+    }
+
+    /** Where [callsign]'s current trip really left from (and landed, once it has), from OpenSky's flight list. */
+    fun openSkyLeg(root: JsonElement, callsign: String): Pair<String?, String?>? {
+        val legs = (root as? kotlinx.serialization.json.JsonArray).orEmpty()
+            .filter { it.str("callsign")?.trim().equals(callsign, ignoreCase = true) }
+        val leg = legs.maxByOrNull { it.num("firstSeen") ?: 0.0 } ?: return null
+        return leg.str("estDepartureAirport") to leg.str("estArrivalAirport")
+    }
+
     /** A route from adsbdb's /v0/callsign response, or null for "unknown callsign". */
     fun route(root: JsonElement): FlightRoute? {
         val r = root.obj("response").obj("flightroute") ?: return null
@@ -253,6 +284,58 @@ object FlightMath {
             val z = a * sin(p1) + b * sin(p2)
             deg(atan2(z, sqrt(x * x + y * y))) to deg(atan2(y, x))
         }
+    }
+
+    /** Initial great-circle bearing from A to B, degrees from north. */
+    fun bearing(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val p1 = rad(lat1); val p2 = rad(lat2); val dl = rad(lon2 - lon1)
+        return (deg(atan2(sin(dl) * cos(p2), cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl))) + 360) % 360
+    }
+
+    private fun angleBetween(a: Double, b: Double) = ((a - b) % 360 + 540) % 360 - 180
+
+    /**
+     * Whether [p] could be flying from [o] to [d]: not far off the direct path, and (in cruise)
+     * heading roughly toward [d]. Route databases keep one route per flight number, but airlines
+     * reuse numbers for several legs, so the stored route is often a different leg.
+     */
+    fun plausible(o: Airport, d: Airport, p: PlanePos): Boolean {
+        val total = distanceNm(o.lat, o.lon, d.lat, d.lon)
+        val done = distanceNm(o.lat, o.lon, p.lat, p.lon)
+        val left = distanceNm(p.lat, p.lon, d.lat, d.lon)
+        if (done + left > total * 1.15 + 50) return false
+        val track = p.track
+        if (!p.onGround && track != null && done > 40 && left > 40) {
+            if (kotlin.math.abs(angleBetween(track, bearing(p.lat, p.lon, d.lat, d.lon))) > 70) return false
+        }
+        return true
+    }
+
+    private fun same(a: Airport?, b: Airport?) = a != null && b != null &&
+        (a.iata.equals(b.iata, true) || distanceNm(a.lat, a.lon, b.lat, b.lon) < 3)
+
+    /**
+     * The route to show. [origin] (and [arrived], after landing) are where the plane really went,
+     * from its tracked path; the stored route only supplies the destination when it agrees.
+     */
+    fun resolveRoute(stored: FlightRoute?, origin: Airport?, arrived: Airport?, p: PlanePos?): FlightRoute? {
+        if (origin == null) return checkRoute(stored, p)
+        val base = stored ?: FlightRoute(p?.callsign.orEmpty(), "", "", null, null)
+        val dest = arrived ?: when {
+            same(stored?.origin, origin) -> stored?.dest
+            same(stored?.dest, origin) -> stored?.origin
+            else -> null
+        }?.takeIf { d -> p == null || plausible(origin, d, p) }
+        return base.copy(origin = origin, dest = dest)
+    }
+
+    /** [r] as stored, reversed (the return leg), or without airports when neither fits [p]. */
+    fun checkRoute(r: FlightRoute?, p: PlanePos?): FlightRoute? {
+        val o = r?.origin ?: return r
+        val d = r.dest ?: return r
+        if (p == null || plausible(o, d, p)) return r
+        if (plausible(d, o, p)) return r.copy(origin = d, dest = o)
+        return r.copy(origin = null, dest = null)
     }
 
     /** How far along the trip the plane is, 0..1, or null without both airports. */
@@ -326,6 +409,8 @@ object FlightRepo {
     private val positions = HashMap<String, Timed<PlanePos?>>()
     private val aircraft = HashMap<String, String?>()
     private var overheadCache: Timed<FlightView?>? = null
+    private val airports = HashMap<String, Airport?>()
+    private val legs = HashMap<String, Timed<Pair<String?, String?>?>>()
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("flights", Context.MODE_PRIVATE)
 
@@ -342,10 +427,11 @@ object FlightRepo {
     }
 
     /** Returns the normalized code, or null if [raw] isn't a flight number. */
-    fun add(ctx: Context, raw: String, label: String): String? {
+    fun add(ctx: Context, raw: String, label: String, routeText: String = ""): String? {
         load(ctx)
         val code = FlightParse.normalize(raw) ?: return null
-        save(ctx, flights.value.filterNot { it.code == code } + TrackedFlight(code, label.trim(), System.currentTimeMillis()))
+        val (from, to) = FlightParse.routeCodes(routeText) ?: ("" to "")
+        save(ctx, flights.value.filterNot { it.code == code } + TrackedFlight(code, label.trim(), System.currentTimeMillis(), from = from, to = to))
         return code
     }
 
@@ -400,14 +486,51 @@ object FlightRepo {
         return r.getOrNull()
     }
 
+    /** An airport by IATA (3 letters) or ICAO (4) code. */
+    suspend fun airport(code: String): Airport? {
+        val c = code.uppercase().trim()
+        if (c.isEmpty()) return null
+        if (c in airports) return airports[c]
+        val kind = if (c.length == 4) "icao" else "iata"
+        val r = runCatching { FlightParse.hexdbAirport(flightJson.parseToJsonElement(Http.get("https://hexdb.io/api/v1/airport/$kind/${enc(c)}"))) }
+        r.onSuccess { airports[c] = it }
+        return r.getOrNull()
+    }
+
+    /**
+     * Where this aircraft's current trip took off (and, once down, landed), from OpenSky. Route
+     * databases often hold a different leg of the same flight number, so this is what's trusted.
+     */
+    private suspend fun leg(hex: String, callsign: String): Pair<Airport?, Airport?>? {
+        if (hex.isBlank()) return null
+        val key = "$hex/$callsign"
+        val now = System.currentTimeMillis()
+        val cached = legs[key]?.takeIf { e ->
+            // Once the departure is known it doesn't change; re-ask now and then for the arrival.
+            now - e.at < if (e.value?.first == null) 10 * 60_000L else if (e.value.second == null) 20 * 60_000L else 12 * 3600_000L
+        }
+        val codes = cached?.value ?: run {
+            val end = now / 1000
+            val r = runCatching {
+                FlightParse.openSkyLeg(
+                    flightJson.parseToJsonElement(Http.get("https://opensky-network.org/api/flights/aircraft?icao24=${enc(hex.lowercase())}&begin=${end - 18 * 3600}&end=$end")),
+                    callsign,
+                )
+            }
+            r.onSuccess { legs[key] = Timed(now, it) }
+            r.getOrNull() ?: legs[key]?.value
+        } ?: return null
+        return (codes.first?.let { airport(it) }) to (codes.second?.let { airport(it) })
+    }
+
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
     /** A flight to show, from the user's list or a calendar event. */
-    data class Active(val code: String, val label: String, val departs: Long? = null, val manual: Boolean = true)
+    data class Active(val code: String, val label: String, val departs: Long? = null, val manual: Boolean = true, val from: String = "", val to: String = "")
 
     fun active(ctx: Context, cfg: FlightsConfig, now: Long = System.currentTimeMillis()): List<Active> {
         load(ctx)
-        val manual = visible(flights.value, now).map { Active(it.code, it.label) }
+        val manual = visible(flights.value, now).sortedByDescending { it.addedAt }.map { Active(it.code, it.label, from = it.from, to = it.to) }
         val fromCal = if (!cfg.fromCalendar) emptyList() else CalendarRepo.upcoming(ctx, limit = 30, lookaheadHours = 24, includeAllDay = false)
             // From three hours before departure until the event ends.
             .filter { it.begin - 3 * 3600_000L <= now && now <= it.end + 30 * 60_000L }
@@ -416,11 +539,18 @@ object FlightRepo {
     }
 
     suspend fun view(ctx: Context, a: Active): FlightView {
-        val route = route(a.code)
-        val callsign = route?.callsign ?: FlightParse.guessCallsign(a.code)
+        val stored = route(a.code)
+        val callsign = stored?.callsign ?: FlightParse.guessCallsign(a.code)
         val pos = position(callsign)
         val seen = lastSeen(ctx)
         val last = seen[a.code]
+        val p = pos ?: last
+        val route = if (a.from.isNotBlank() && a.to.isNotBlank()) {
+            (stored ?: FlightRoute(callsign, a.code, "", null, null)).copy(origin = airport(a.from), dest = airport(a.to))
+        } else {
+            val l = p?.let { leg(it.hex, it.callsign.ifBlank { callsign }) }
+            FlightMath.resolveRoute(stored, l?.first, l?.second, p)
+        }
         val phase = FlightMath.phase(pos, last, route?.dest, System.currentTimeMillis())
         if (pos != null) saveLastSeen(ctx, seen + (a.code to pos))
         if (phase == FlightPhase.LANDED && a.manual) {
@@ -445,7 +575,8 @@ object FlightRepo {
             val pos = root.arr("ac").orEmpty().mapNotNull { FlightParse.plane(it, now) }
                 .filter { !it.onGround && it.callsign.isNotBlank() }
                 .minByOrNull { it.distNm ?: FlightMath.distanceNm(lat, lon, it.lat, it.lon) } ?: return@runCatching null
-            val route = route(pos.callsign)
+            val l = leg(pos.hex, pos.callsign)
+            val route = FlightMath.resolveRoute(route(pos.callsign), l?.first, l?.second, pos)
             FlightView(pos.callsign, "", route, pos, FlightPhase.OVERHEAD, aircraftName(pos.hex), home = lat to lon)
         }
         r.onSuccess { overheadCache = Timed(now, it) }
@@ -457,12 +588,20 @@ object FlightRepo {
         val cfg = settings.flights
         val active = active(ctx, cfg)
         val views = if (active.isNotEmpty()) {
-            active.map { view(ctx, it) }
+            // The flight in the air gets the map; the rest keep their order (newest first).
+            active.map { view(ctx, it) }.sortedBy { phaseRank(it.phase) }
         } else if (cfg.overhead && settings.weather.lat != null && settings.weather.lon != null) {
             listOfNotNull(overhead(settings.weather.lat, settings.weather.lon, cfg.overheadRadius))
         } else emptyList()
         lastViews.value = views
         return views
+    }
+
+    private fun phaseRank(p: FlightPhase) = when (p) {
+        FlightPhase.AIRBORNE, FlightPhase.OUT_OF_RANGE -> 0
+        FlightPhase.TAXIING -> 1
+        FlightPhase.SCHEDULED -> 2
+        else -> 3
     }
 
     /** The page tapping a flight opens. */

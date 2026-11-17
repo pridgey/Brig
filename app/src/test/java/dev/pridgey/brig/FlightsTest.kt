@@ -132,4 +132,46 @@ class FlightsTest {
         assertEquals("N", FlightMath.compass(350.0))
         assertEquals("SW", FlightMath.compass(225.0))
     }
+
+    @Test
+    fun routeComesFromWhereThePlaneTookOff() {
+        // DL2176 on 2026-11-16: adsbdb said YUL → ATL, but the plane left LAX and was over Utah heading for Denver.
+        val yul = Airport("YUL", "", "Montréal", 45.47, -73.74)
+        val atl = Airport("ATL", "", "Atlanta", 33.64, -84.43)
+        val lax = Airport("LAX", "", "Los Angeles", 33.94, -118.41)
+        val den = Airport("DEN", "", "Denver", 39.86, -104.67)
+        val stale = FlightRoute("DAL2176", "DL2176", "Delta Air Lines", yul, atl)
+        val p = PlanePos("a37aa3", "DAL2176", lat = 37.22, lon = -111.55, altFt = 37050, speedKt = 517.0, track = 66.4)
+        assertTrue(!FlightMath.plausible(yul, atl, p))
+        // Without the real origin, the wrong route is dropped rather than shown.
+        val checked = FlightMath.checkRoute(stale, p)!!
+        assertNull(checked.origin)
+        assertNull(checked.dest)
+        // With it, the origin is right and an unrelated destination isn't guessed.
+        val resolved = FlightMath.resolveRoute(stale, lax, null, p)!!
+        assertEquals("LAX", resolved.origin?.iata)
+        assertNull(resolved.dest)
+        // A stored route that's the same leg keeps its destination; the return leg is flipped.
+        assertEquals("DEN", FlightMath.resolveRoute(FlightRoute("DAL2176", "", "", lax, den), lax, null, p)!!.dest?.iata)
+        assertEquals("DEN", FlightMath.resolveRoute(FlightRoute("DAL2176", "", "", den, lax), lax, null, p)!!.dest?.iata)
+        assertTrue(FlightMath.plausible(lax, den, p))
+    }
+
+    @Test
+    fun parsesRouteTextAndLookups() {
+        assertEquals("LAX" to "DEN", FlightParse.routeCodes("lax den"))
+        assertEquals("KLAX" to "KDEN", FlightParse.routeCodes("KLAX → KDEN"))
+        assertNull(FlightParse.routeCodes("LAX"))
+        assertNull(FlightParse.routeCodes("to denver"))
+        val ap = FlightParse.hexdbAirport(Json.parseToJsonElement(
+            """{"country_code":"US","iata":"DEN","icao":"KDEN","airport":"Denver International Airport","latitude":39.8617,"longitude":-104.673}""",
+        ))!!
+        assertEquals("DEN", ap.iata)
+        assertEquals("Denver", ap.city)
+        val leg = FlightParse.openSkyLeg(Json.parseToJsonElement(
+            """[{"icao24":"a37aa3","firstSeen":100,"estDepartureAirport":"KATL","estArrivalAirport":"KLAX","callsign":"DAL900  "},
+               {"icao24":"a37aa3","firstSeen":200,"estDepartureAirport":"KLAX","estArrivalAirport":null,"callsign":"DAL2176 "}]""",
+        ), "DAL2176")
+        assertEquals("KLAX" to null, leg)
+    }
 }

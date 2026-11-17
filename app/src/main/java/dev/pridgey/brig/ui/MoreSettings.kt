@@ -399,18 +399,19 @@ fun PackagesSettings(cfg: PackagesConfig, update: SettingsUpdate) {
 @Composable
 fun FlightsSettings(settings: BrigSettings, update: SettingsUpdate) {
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
     val cfg = settings.flights
     remember { FlightRepo.load(ctx) }
     val list by FlightRepo.flights.collectAsState()
     var number by remember { mutableStateOf("") }
     var label by remember { mutableStateOf("") }
+    var routeText by remember { mutableStateOf("") }
     fun set(f: (FlightsConfig) -> FlightsConfig) = update { it.copy(flights = f(it.flights)) }
     SettingsGroup("Flight tracker") {
         FlightRepo.visible(list).sortedByDescending { it.addedAt }.forEach { f ->
             ListItem(
                 headlineContent = { Text(FlightParse.pretty(f.code)) },
-                supportingContent = f.label.takeIf { it.isNotBlank() }?.let { { Text(it) } },
+                supportingContent = listOf(f.label, if (f.from.isNotBlank()) "${f.from} → ${f.to}" else "").filter { it.isNotBlank() }.joinToString(" · ")
+                    .takeIf { it.isNotBlank() }?.let { { Text(it) } },
                 trailingContent = { IconButton(onClick = { FlightRepo.remove(ctx, f.code) }) { Icon(Icons.Filled.Close, "Remove") } },
                 colors = rowColors,
             )
@@ -418,19 +419,17 @@ fun FlightsSettings(settings: BrigSettings, update: SettingsUpdate) {
         Text("Follow a flight", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 20.dp, top = 8.dp))
         Field("Flight number, like UA 1321", number) { number = it }
         Field("Name (optional), like Mom's flight", label) { label = it }
+        Field("Route (optional), like LAX DEN", routeText) { routeText = it }
         Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Button(onClick = {
-                val code = FlightRepo.add(ctx, number, label)
+                val code = if (routeText.isNotBlank() && FlightParse.routeCodes(routeText) == null) null else FlightRepo.add(ctx, number, label, routeText)
                 if (code == null) {
-                    toast(ctx, "That doesn't look like a flight number")
+                    toast(ctx, if (FlightParse.normalize(number) == null) "That doesn't look like a flight number" else "Enter the route as two airport codes, like LAX DEN")
                 } else {
                     number = ""
                     label = ""
-                    scope.launch {
-                        val r = FlightRepo.route(code)
-                        val where = r?.let { listOfNotNull(it.origin?.iata, it.dest?.iata).joinToString(" → ") }.orEmpty()
-                        toast(ctx, if (where.isNotBlank()) "Following ${FlightParse.pretty(code)} · $where" else "Following ${FlightParse.pretty(code)}. Its route isn't known yet.")
-                    }
+                    routeText = ""
+                    toast(ctx, "Following ${FlightParse.pretty(code)}")
                 }
             }, enabled = number.isNotBlank()) { Text("Follow") }
         }
@@ -452,6 +451,7 @@ fun FlightsSettings(settings: BrigSettings, update: SettingsUpdate) {
             ChipChoice(FlightMapView.entries, cfg.mapView, { it.label }) { mv -> set { it.copy(mapView = mv) } }
         }
         DropdownRow("Tapping opens", FlightTracker.entries, cfg.tracker, { it.label }) { t -> set { it.copy(tracker = t) } }
+        Note("Airlines reuse flight numbers for different legs, so Brig takes the departure airport from where the plane actually took off (OpenSky). The destination is only shown when it's certain; add the route yourself to always see it.")
         Note("Positions come from adsb.lol and routes from adsbdb, both free community networks of ADS-B receivers. The widget refreshes every 2 minutes. Coverage is thin over oceans, and private or military flights may be hidden. Maps © OpenStreetMap contributors © CARTO.")
     }
 }

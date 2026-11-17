@@ -135,7 +135,10 @@ private fun FlightMap(v: FlightView, shot: MapShot, style: FlightMapStyle, accen
                     line(o.lat to o.lon, pos.lat to pos.lon, accent, 3.dp.toPx(), false)
                     line(pos.lat to pos.lon, d.lat to d.lon, ink.copy(alpha = 0.55f), 2.dp.toPx(), true)
                 } else line(o.lat to o.lon, d.lat to d.lon, if (v.phase == FlightPhase.LANDED) accent else ink.copy(alpha = 0.55f), 2.5.dp.toPx(), v.phase != FlightPhase.LANDED)
-                listOf(o, d).forEach { ap ->
+            }
+            if (o != null && d == null && pos != null && v.home == null) line(o.lat to o.lon, pos.lat to pos.lon, accent, 3.dp.toPx(), false)
+            if (v.home == null) {
+                listOfNotNull(o, d).forEach { ap ->
                     val c = at(ap.lat, ap.lon)
                     drawCircle(ink, 4.5.dp.toPx(), c)
                     drawCircle(accent, 2.5.dp.toPx(), c)
@@ -234,11 +237,11 @@ private fun PhasePill(phase: FlightPhase, accent: Color) {
 @Composable
 private fun RouteProgress(v: FlightView, accent: Color) {
     val o = v.route?.origin ?: return
-    val d = v.route.dest ?: return
+    val d = v.route.dest
     val f = when (v.phase) {
         FlightPhase.LANDED -> 1f
         FlightPhase.SCHEDULED, FlightPhase.TAXIING -> 0f
-        else -> FlightMath.progress(v.route, v.pos) ?: 0f
+        else -> FlightMath.progress(v.route, v.pos) ?: if (d == null) 0.5f else 0f
     }
     val plane = rememberVectorPainter(Icons.Filled.Flight)
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -250,7 +253,7 @@ private fun RouteProgress(v: FlightView, accent: Color) {
             val y = size.height / 2
             val x = size.width * f
             drawLine(Color.White.copy(alpha = 0.22f), Offset(0f, y), Offset(size.width, y), 2.dp.toPx(), StrokeCap.Round)
-            drawLine(accent, Offset(0f, y), Offset(x, y), 3.dp.toPx(), StrokeCap.Round)
+            if (d != null) drawLine(accent, Offset(0f, y), Offset(x, y), 3.dp.toPx(), StrokeCap.Round)
             val sz = 18.dp.toPx()
             translate((x - sz / 2).coerceIn(0f, size.width - sz), y - sz / 2) {
                 rotate(90f, pivot = Offset(sz / 2, sz / 2)) {
@@ -259,8 +262,8 @@ private fun RouteProgress(v: FlightView, accent: Color) {
             }
         }
         Column(horizontalAlignment = Alignment.End) {
-            Text(d.iata, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text(d.city, style = MaterialTheme.typography.labelSmall, color = dim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(84.dp), textAlign = TextAlign.End)
+            Text(d?.iata ?: "?", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(d?.city ?: "Destination unknown", style = MaterialTheme.typography.labelSmall, color = dim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(84.dp), textAlign = TextAlign.End)
         }
     }
 }

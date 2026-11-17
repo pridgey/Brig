@@ -1091,8 +1091,9 @@ private fun LockMockContent(settings: BrigSettings) {
                         listOf(dev.pridgey.brig.data.TrackedPackage("1Z999", "UPS", "Running shoes", "Out for delivery", nowMs - 40 * 60_000L)),
                         accent,
                     ) {}
-                    WidgetType.FLIGHTS -> sampleFlight().let { f ->
-                        FlightsView(listOf(f), if (settings.flights.showMap) remember(settings.flights.mapView) { mapFrame(f, settings.flights.mapView)?.let { (p, a, b) -> dev.pridgey.brig.util.MapShot.blank(p, minZ = a, maxZ = b) } } else null, settings.flights, accent, settings.weather.fahrenheit) {}
+                    WidgetType.FLIGHTS -> (dev.pridgey.brig.data.FlightRepo.lastViews.value.ifEmpty { listOf(sampleFlight()) }).let { fs ->
+                        val f = fs.first()
+                        FlightsView(fs, if (settings.flights.showMap) remember(settings.flights.mapView, f) { mapFrame(f, settings.flights.mapView)?.let { (p, a, b) -> dev.pridgey.brig.util.MapShot.blank(p, minZ = a, maxZ = b) } } else null, settings.flights, accent, settings.weather.fahrenheit) {}
                     }
                     WidgetType.MEMORIES -> GlassCard {
                         Text("On this day · 3 years ago", style = MaterialTheme.typography.titleSmall)
